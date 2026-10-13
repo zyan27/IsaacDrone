@@ -5,3 +5,7 @@ checkpoints/
 *.zip
 runs/
 tensorboard/
+
+# generated rollout plots
+hover_*.png
+last_rollout.png
