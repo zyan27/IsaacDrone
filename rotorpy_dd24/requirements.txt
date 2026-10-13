@@ -1,0 +1,10 @@
+# DD24 rotorpy RL track. Python 3.11 (torch has no 3.14 wheels yet).
+# Verified working on macOS (CPU) 2026-10-13.
+rotorpy==3.0.0
+torch==2.14.1
+stable-baselines3==2.9.0
+gymnasium==1.4.0
+# rotorpy imports these inside a try/except; without them it silently falls
+# back and the batched env throws NameError('roma') / dtype errors:
+roma==1.6.1
+torchdiffeq==0.2.5

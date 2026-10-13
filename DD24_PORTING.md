@@ -9,6 +9,19 @@ This repo is a **fork of [dpallick/IsaacDrone](https://github.com/dpallick/Isaac
 
 ---
 
+## ⭐ PRIMARY STACK: RotorPy + PX4 — see `rotorpy_dd24/`
+
+After investigating, the **DuckieDrone team uses PX4 SITL + [rotorpy](https://github.com/spencerfolk/rotorpy)**,
+NOT Isaac Sim/Pegasus. RotorPy is pure-Python/CPU, has a built-in Gym RL env and
+a `PX4Multirotor` (pymavlink) class, and **trains on the Mac** (PPO verified at
+~4000 fps). This is now the primary path — see **`rotorpy_dd24/README.md`**.
+
+The Isaac Sim material below (`environments/`, `sim_px4/`) is kept only as a
+**fallback for vision/camera-based RL**, which rotorpy cannot render. For
+state-based flight (hover, goto, paths) use the rotorpy track.
+
+---
+
 ## The two halves of the port
 
 ### 1. Airframe → RL environment  (status: STARTED)
