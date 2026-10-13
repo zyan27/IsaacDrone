@@ -16,6 +16,8 @@ from isaaclab.sensors.imu import Imu, ImuCfg
 import math
 from pxr import UsdGeom
 
+from .dd24_params import DD24
+
 
 @configclass
 class DroneHoverEnvCfg(DirectRLEnvCfg):
@@ -48,6 +50,26 @@ class DroneHoverEnvCfg(DirectRLEnvCfg):
     max_thrust_to_weight = 2.2
     yaw_coeff = 0.00001
     max_prop_visual_speed = 50000.0
+
+
+@configclass
+class DroneHoverEnvCfgDD24(DroneHoverEnvCfg):
+    """DD24 airframe config. Overrides the Crazyflie dynamics scalars with the
+    Duckietown DD24 numbers from `dd24_params.py`.
+
+    STILL A PARTIAL PORT — two things remain before dynamics truly match a DD24:
+      1. `robot` below still points at the Crazyflie USD mesh (there is no
+         public DD24 USD yet). Until it is swapped, the body MASS and INERTIA
+         read from PhysX are the Crazyflie's, not the DD24's. Build/convert a
+         DD24 URDF->USD (motors at arm_length, hub at measured mass) and set
+         `robot = DD24_CFG.replace(...)` here.
+      2. Several DD24 params are [EST]/[TODO] — measure them (see dd24_params).
+    """
+    # Geometry + propulsion that ARE used by _pre_physics_step today:
+    arm_length = DD24.arm_length_m              # [EST] measure wheelbase/2
+    max_thrust_to_weight = DD24.thrust_to_weight  # [EST] from thrust stand
+    yaw_coeff = DD24.yaw_coeff                  # [EST] identify from logs
+    # TODO: robot = DD24_CFG.replace(prim_path="/World/envs/env_.*/Drone")
 
 
 class DroneHoverEnv(DirectRLEnv):
