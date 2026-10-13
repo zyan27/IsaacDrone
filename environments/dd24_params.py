@@ -21,10 +21,10 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class DD24Params:
     # --- Mass ------------------------------------------------------------
-    # [TODO(measure)] All-up weight: put the fully assembled drone WITH battery
-    # on a kitchen scale. The 1.76 kg store figure is the SHIPPING/KIT weight,
-    # not flight mass. A 4" quad like this is realistically ~0.5-0.7 kg AUW.
-    mass_kg: float = 0.60  # [EST] placeholder until weighed
+    # All-up flight weight ~0.80 kg (user-measured). The 1.76 kg store/manual
+    # figure is the kit/box weight, not flight mass. Scales thrust-to-weight
+    # directly, so re-confirm on a scale if the build changes.
+    mass_kg: float = 0.80  # [SRC] user-measured AUW
 
     # Component masses that are known, for a bottom-up sanity check vs the scale:
     motor_mass_kg: float = 0.028        # [SRC] DX2205, ~28 g each
@@ -82,7 +82,7 @@ DD24 = DD24Params()
 
 if __name__ == "__main__":
     p = DD24
-    print(f"mass (AUW):            {p.mass_kg:.3f} kg   [EST - MEASURE THIS]")
+    print(f"mass (AUW):            {p.mass_kg:.3f} kg   [user-measured]")
     print(f"component lower bound: {p.component_mass_lower_bound_kg():.3f} kg")
     print(f"arm length:            {p.arm_length_m:.3f} m   [EST - MEASURE THIS]")
     print(f"max thrust/motor:      {p.max_thrust_per_motor_N:.2f} N   [EST - MEASURE THIS]")
