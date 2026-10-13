@@ -1,6 +1,7 @@
+.venv/
 __pycache__/
 *.pyc
-IsaacLab/
-curobo/
 checkpoints/
-README.md
+*.zip
+runs/
+tensorboard/
