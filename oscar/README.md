@@ -71,6 +71,14 @@ Checkpoint lands at `checkpoints/rl_hover.pt`.
 4. **Scratch quota.** The .sif is ~10+ GB and the asset cache grows — keep both
    under `~/scratch`, never `~` (home quota is small).
 
+## Visualize on Oscar (headless MP4)
+On a GPU node (salloc), render a rollout with a camera chasing env_0's drone:
+```bash
+bash oscar/run_isaac.sh play_video.py --headless --enable_cameras \
+    --rl_checkpoint checkpoints/rl_hover.pt --out videos/rl_hover.mp4
+```
+It prints z every 0.5 s. Copy `videos/*.mp4` back with scp to watch it.
+
 ## Pull the result back to the Mac
 ```bash
 scp YOURID@ssh.ccv.brown.edu:~/IsaacDrone/checkpoints/rl_hover.pt ./checkpoints/
