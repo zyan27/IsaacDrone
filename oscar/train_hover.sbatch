@@ -40,6 +40,7 @@ mkdir -p "$ISAAC_CACHE"/{kit,kitdata,kitlogs,home}
 # The .sif is read-only: Isaac Lab is pip-installed into PYTHONUSERBASE on scratch
 # (see README), and kit's cache/data/logs dirs are bound to writable scratch dirs.
 # ACCEPT_EULA / OMNI_KIT_ACCEPT_EULA keep the container from blocking on prompts.
+# PYTHONUNBUFFERED: simulation_app.close() hard-exits, which drops buffered prints.
 apptainer exec --nv --cleanenv \
     --home "$ISAAC_CACHE/home" \
     --bind "$SCRATCH_REAL" \
@@ -49,6 +50,7 @@ apptainer exec --nv --cleanenv \
     --bind "$ISAAC_CACHE/kitlogs:/isaac-sim/kit/logs" \
     --env ACCEPT_EULA=Y \
     --env OMNI_KIT_ACCEPT_EULA=YES \
+    --env PYTHONUNBUFFERED=1 \
     --env PYTHONUSERBASE="$ISAAC_DIR/pyuser" \
     "$SIF" \
     bash -c "cd '$REPO_DIR' && \
