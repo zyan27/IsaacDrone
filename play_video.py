@@ -35,8 +35,8 @@ def main():
     # the 1 m hover target so climb, overshoot and drift stay visible.
     env_cfg.viewer.origin_type = "env"
     env_cfg.viewer.env_index = 0
-    env_cfg.viewer.eye = (1.2, 1.2, 1.3)
-    env_cfg.viewer.lookat = (0.0, 0.0, 0.8)
+    env_cfg.viewer.eye = (0.75, 0.75, 1.2)
+    env_cfg.viewer.lookat = (0.0, 0.0, 0.85)
 
     env = DroneHoverEnv(cfg=env_cfg, render_mode="rgb_array")
     controller = RLHoverController(device=env.device, checkpoint=args.rl_checkpoint)
@@ -48,6 +48,12 @@ def main():
     writer = imageio.get_writer(args.out, fps=int(round(1.0 / dt)))
 
     obs, _ = env.reset()
+    # The viewer cfg's static eye/lookat don't stick headless; aim the camera directly.
+    origin = env.scene.env_origins[0].tolist()
+    env.sim.set_camera_view(
+        eye=[o + e for o, e in zip(origin, env_cfg.viewer.eye)],
+        target=[o + t for o, t in zip(origin, env_cfg.viewer.lookat)],
+    )
     for step in range(steps):
         with torch.inference_mode():
             actions = controller.act(obs["policy"])
@@ -56,8 +62,13 @@ def main():
         writer.append_data(env.render())
 
         if step % 25 == 0:
-            z = env.drone.data.root_state_w[:, 2]
-            print(f"t={step * dt:5.2f}s z_env0={z[0].item():.3f} z_mean={z.mean().item():.3f}")
+            pos = env.drone.data.root_state_w[:, 0:3] - env.scene.env_origins
+            z = pos[:, 2]
+            xy = torch.linalg.norm(pos[:, 0:2], dim=-1)
+            print(
+                f"t={step * dt:5.2f}s z_env0={z[0].item():.3f} z_mean={z.mean().item():.3f} "
+                f"xy_env0=({pos[0, 0].item():+.2f},{pos[0, 1].item():+.2f}) xy_drift_mean={xy.mean().item():.2f}"
+            )
 
         if torch.any(terminated | truncated):
             print(f"t={step * dt:5.2f}s reset (terminated={terminated.sum().item()})")
