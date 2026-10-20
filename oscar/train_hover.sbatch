@@ -6,7 +6,7 @@
 # a5000 — NOT a100/v100/h100/b200 (no RT cores, Isaac Sim rendering unsupported,
 # so the gpu-he V100 partition will NOT work). The OR-constraint grabs any RTX card.
 #SBATCH --constraint=l40s|a6000|a40|a5000
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=4   # norm-gpu QOS caps a user at 12 CPUs total
 #SBATCH --mem=32G
 #SBATCH --time=08:00:00
 #SBATCH --output=oscar/logs/%x_%j.out

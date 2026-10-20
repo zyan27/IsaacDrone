@@ -67,7 +67,8 @@ One PX4 per env, each a CPU process, so tens of envs, not thousands.
 | File | What |
 |---|---|
 | `environments/drone_ctbr_env.py` | `DirectRLEnv`: 4-dim action = (thrust, p, q, r) normalized; `controller="emulated" \| "px4"`. Physics dt 1/250, decimation 5 → 50 Hz policy. |
-| `environments/px4_rate_emulator.py` | Batched torch PX4 rate PID + allocator (3a). |
+| `environments/px4_rate_emulator.py` | **Done.** Batched torch port of v1.15.4 gyro LPFs, rate PID (i_factor, anti-windup) and SequentialDesaturation allocator (airmode off). |
+| `sim_px4/probe_px4_params.sh` | **Done.** Boots dt-px4 SITL (SIH) and prints effective params. |
 | `sim_px4/mavlink_bridge.py` | pymavlink, per-instance TCP sim link + UDP offboard link; packs HIL_SENSOR/HIL_GPS from env tensors, unpacks HIL_ACTUATOR_CONTROLS; arm + OFFBOARD at reset. Reference: Pegasus `px4_mavlink_backend.py`. |
 | `sim_px4/launch_px4.sh` | Starts N `apptainer exec dt-px4.sif px4 -i k` with DD24 params, waits for TCP 4560+k. |
 | `sim_px4/px4_defaults.py` | **Done.** v1.15.4 rate/attitude gains, filters, quad-X geometry. |
@@ -81,8 +82,15 @@ reference.
 1. **Episode reset with PX4.** PX4's estimator and arming state don't teleport.
    Options: restart the instance (~seconds), or land → disarm → reset → re-arm.
    Decide after measuring restart time on Oscar.
-2. **PX4 version match.** The DD24 runs 1.15.4. dt-px4's SITL version must match,
-   or the default gains differ. Check `px4 ver` in the .sif.
+2. **PX4 version match — MISMATCH (probed 2026-10-20, `probe_px4_params.sh`).**
+   dt-px4's SITL is PX4 `main` @ c2a44ba7 (2026-08), "Release 0.0.0", not 1.15.4.
+   Effective params there: rate P/I/D/FF/K/int-lim, rate max, yaw P, yaw weight,
+   IMU_GYRO_CUTOFF 40, CA CT/KM, MPC_THR_HOVER 0.5, THR_MDL_FAC 0.0, MC_AIRMODE 0
+   all equal v1.15.4. Differences: **MC_ROLL_P / MC_PITCH_P 4.0 (v1.15.4: 6.5)**
+   and IMU_DGYRO_CUTOFF 20 (v1.15.4: 30, but DD24 overrides to 20 anyway).
+   So `launch_px4.sh` must `param set MC_ROLL_P 6.5; param set MC_PITCH_P 6.5`
+   (plus load the DD24 params file). Controller code may also differ between
+   versions; building v1.15.4 SITL ourselves is the clean fix if that matters.
 3. **No horizontal position on the real drone.** The EKF has no GPS/flow/vision,
    so a position-holding policy must get x/y from somewhere else (camera
    pipeline) or be limited to hover/attitude tasks. Decide before 3b.
@@ -93,3 +101,20 @@ reference.
    curve (DD24 `max_thrust_per_motor_N` is still `[EST]`). Mass 0.82704 kg is in
    `dd24_params.py`, also unverified.
 6. **Roll.** CTBR needs roll rate; pitch/throttle/yaw alone can't hold position.
+7. **Default gains vs airframe (found while testing `px4_rate_emulator.py`).**
+   Whether PX4's default rate gains are stable depends on control authority per
+   inertia, not on loop rate (250/500/1000 Hz behave the same). Toy roll/pitch
+   plant, rate step, peak-to-peak oscillation after settling (rad/s):
+
+   | Ixx (kg m²) | TWR 2.6 | TWR 5.2 |
+   |---|---|---|
+   | 1.5e-3 | 4–6 (unstable) | 4–7 (unstable) |
+   | 3.0e-3 | 0.02 | 2–3 (limit cycle) |
+   | 5.0e-3 | 0.02 | 0.02 |
+
+   The Crazyflie model (28 g) is far outside the stable region (D-term loop gain
+   ≈ 3), so **Part 3 must simulate DD24 mass/inertia/thrust, not the Crazyflie**.
+   The real DD24 flies on these defaults, so its true values are in the stable
+   region. Current estimates (10.8 N/motor ⇒ TWR 5.2; bottom-up Ixx ≈ 1.5–3e-3)
+   are not, so **measure max thrust per motor and inertia** (bifilar pendulum)
+   before training the CTBR policy.
