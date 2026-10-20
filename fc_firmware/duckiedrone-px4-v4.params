@@ -1,0 +1,140 @@
+# Flight controller settings for the Duckiedrone DD24-B (PX4).
+#
+# This file holds all the settings the drone's flight controller needs in order
+# to fly: what shape the frame is, where the motors are and which way they spin,
+# which sensors are fitted, and how the drone should behave. Loading it all at
+# once saves you from typing in dozens of settings by hand.
+#
+# How to use it: open QGroundControl, connect the flight controller over USB,
+# then go to Vehicle Setup > Parameters > Tools > Load from file, choose this
+# file, and reboot the flight controller when it asks.
+#
+# One thing you still do yourself afterwards: calibrate the sensors
+# (accelerometer, gyroscope and level horizon) in QGroundControl. Those readings
+# are different for every board, so they are not saved in here.
+#
+# Each setting below has a short note above it explaining what it does. You do
+# not need to understand every line to use the file; the notes are just there
+# if you are curious. A few of them link to the PX4 documentation if you want to
+# read more.
+#
+# Vehicle-Id Component-Id Name Value Type
+#
+# --- Airframe name ---
+# SYS_AUTOSTART picks a ready-made "recipe" for the airframe (4001 = a generic
+# quad in X layout). On a normal PX4 that recipe would set up the whole frame
+# for you. This stripped-down build does not run the recipe, so the number does
+# nothing here except show a friendly name in QGroundControl. The real frame is
+# built by hand in the CA_ block just below.
+1	1	SYS_AUTOSTART	4001	6
+# --- Frame shape and motor layout ---
+# Tells everyone "I am a quadcopter" (2 = quad). QGC and MAVROS read this to
+# draw the right icon and pick sensible defaults.
+1	1	MAV_TYPE	2	6
+# The kind of vehicle for the motor-mixing math. 0 = multirotor.
+1	1	CA_AIRFRAME	0	6
+# How many motors we have. Four.
+1	1	CA_ROTOR_COUNT	4	6
+# The next block tells PX4 exactly where each motor sits and which way it spins,
+# so it can work out how to mix them for roll, pitch and yaw. Positions are
+# normalized: PX is front (+) / back (-), PY is right (+) / left (-). KM is the
+# spin direction: a plus sign means the propeller turns counter-clockwise, a
+# minus sign means clockwise. This pattern is "props-in".
+# More on control allocation: https://docs.px4.io/v1.15/en/config/actuators.html
+# Motor 1: front-right corner, spins counter-clockwise.
+1	1	CA_ROTOR0_PX	1.0	9
+1	1	CA_ROTOR0_PY	1.0	9
+1	1	CA_ROTOR0_KM	0.05	9
+# Motor 2: rear-left corner, spins counter-clockwise.
+1	1	CA_ROTOR1_PX	-1.0	9
+1	1	CA_ROTOR1_PY	-1.0	9
+1	1	CA_ROTOR1_KM	0.05	9
+# Motor 3: front-left corner, spins clockwise.
+1	1	CA_ROTOR2_PX	1.0	9
+1	1	CA_ROTOR2_PY	-1.0	9
+1	1	CA_ROTOR2_KM	-0.05	9
+# Motor 4: rear-right corner, spins clockwise.
+1	1	CA_ROTOR3_PX	-1.0	9
+1	1	CA_ROTOR3_PY	1.0	9
+1	1	CA_ROTOR3_KM	-0.05	9
+# --- Motor outputs ---
+# Which motor each output pin drives. Output 1 goes to Motor 1, output 2 to
+# Motor 2, and so on (101..104 are PX4's codes for "Motor 1".."Motor 4").
+1	1	PWM_MAIN_FUNC1	101	6
+1	1	PWM_MAIN_FUNC2	102	6
+1	1	PWM_MAIN_FUNC3	103	6
+1	1	PWM_MAIN_FUNC4	104	6
+# The language the flight controller speaks to the ESCs. -3 means DShot600, a
+# fast digital protocol (not the old analog PWM). Both motor timer groups use it.
+1	1	PWM_MAIN_TIM0	-3	6
+1	1	PWM_MAIN_TIM1	-3	6
+# --- Which sensors are fitted ---
+# These tell PX4 which sensors are really on the board. This drone has no
+# barometer, no compass (magnetometer) and no GPS, so all three are 0.
+1	1	SYS_HAS_BARO	0	6
+1	1	SYS_HAS_MAG	0	6
+1	1	SYS_HAS_GPS	0	6
+# --- Position and height estimation ---
+# EKF2 is the math that estimates where the drone is and how high it is by
+# blending the sensors together. Since the only things we have are the IMU and
+# a downward range sensor (ToF), we switch off every source we do not have and
+# tell it to trust the range sensor for height.
+# Full list: https://docs.px4.io/v1.15/en/advanced_config/parameter_reference.html
+# Keep this on even without a barometer. PX4 won't read one if absent, but
+# turning it off stops height estimation entirely.
+1	1	EKF2_BARO_CTRL	1	6
+# Do not use GPS.
+1	1	EKF2_GPS_CTRL	0	6
+# Do not use external vision or a motion-capture system.
+1	1	EKF2_EV_CTRL	0	6
+# Do not use an optical-flow camera.
+1	1	EKF2_OF_CTRL	0	6
+# Do not use a compass at all (5 = none), so the estimator never tries to.
+1	1	EKF2_MAG_TYPE	5	6
+# Use our bottom facing ToF Sensor for Height estimate
+1	1	EKF2_HGT_REF	2	6
+# Use the downward rangefinder in EKF2.
+# 0=off, 1=Enabled (Conditional), 2=Enabled (Always)
+1	1	EKF2_RNG_CTRL	2	6
+# The closest distance (in meters) a range reading is trusted from.
+1	1	EKF2_MIN_RNG	0.01	9
+# --- Motion sensor (IMU) ---
+# The IMU has accelerometers and gyroscopes. 
+# The next three lines tune how its signal is sampled and smoothed.
+# Smooth the gyro's rate-of-change signal by trimming noise above 20 Hz.
+1	1	IMU_DGYRO_CUTOFF	20.0	9
+# How many gyro samples per second are handed to the controller (800 per second).
+1	1	IMU_GYRO_RATEMAX	800	6
+# How often (times per second) IMU readings are bundled up for the estimator.
+1	1	IMU_INTEG_RATE	250	6
+# --- Safety, battery and communication ---
+# Skips the 5 V supply check, which this board cannot measure. Without 894281
+# the drone refuses to arm.
+1	1	CBRK_SUPPLY_CHK	894281	6
+# How many cells the flight battery has. Ours is a 4-cell (4S) pack.
+1	1	BAT1_N_CELLS	4	6
+# Scales the measured voltage back up to the real pack voltage. Without it the
+# drone reads 0 V and no battery protection works.
+1	1	BAT1_V_DIV	11.0	9
+# The per-cell voltage that counts as empty (0 %), so 14.0 V on our 4S pack.
+1	1	BAT1_V_EMPTY	3.5	9
+# Pack size in mAh. The board cannot measure current, so used-mAh and
+# time-remaining stay blank anyway.
+1	1	BAT1_CAPACITY	1500.0	9
+# What to do at critical battery. 2 = land here.
+1	1	COM_LOW_BAT_ACT	2	6
+# The lowest charge that still allows arming. 0.20 = 20 %.
+1	1	COM_ARM_BAT_MIN	0.20	9
+# What the drone does if it loses the data link to the companion computer (the
+# Pi running MAVROS). 0 = disabled (no action). We disable this check since the
+# drone has no GPS, so a real return home cannot happen anyway.
+# Ref: https://docs.px4.io/v1.15/en/advanced_config/parameter_reference.html#NAV_DLL_ACT
+1	1	NAV_DLL_ACT	0	6
+# By default PX4 also treats a lost radio-control link as an emergency.
+# This lets some modes carry on without one. 4 = allow it in OFFBOARD, so the
+# companion computer can drive the drone with no RC transmitter plugged in.
+# Ref: https://docs.px4.io/v1.15/en/advanced_config/parameter_reference.html#COM_RCL_EXCEPT
+1	1	COM_RCL_EXCEPT	4	6
+# Which version of the MAVLink messaging language to speak. 2 = MAVLink 2, the
+# modern one that MAVROS and QGroundControl expect.
+1	1	MAV_PROTO_VER	2	6
