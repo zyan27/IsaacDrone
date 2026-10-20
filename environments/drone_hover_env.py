@@ -66,7 +66,9 @@ class DroneHoverEnvCfgDD24(DroneHoverEnvCfg):
       2. Several DD24 params are [EST]/[TODO] — measure them (see dd24_params).
     """
     # Geometry + propulsion that ARE used by _pre_physics_step today:
-    arm_length = DD24.arm_length_m              # [EST] measure wheelbase/2
+    # _pre_physics_step uses arm_length as the roll/pitch moment arm, which on an
+    # X frame is the center-to-motor distance / sqrt(2).
+    arm_length = DD24.lever_arm_m               # [SRC] from measured 0.23 m diagonal
     max_thrust_to_weight = DD24.thrust_to_weight  # [EST] from thrust stand
     yaw_coeff = DD24.yaw_coeff                  # [EST] identify from logs
     # TODO: robot = DD24_CFG.replace(prim_path="/World/envs/env_.*/Drone")

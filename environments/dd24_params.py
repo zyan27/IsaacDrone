@@ -33,10 +33,13 @@ class DD24Params:
     n_rotors: int = 4
 
     # --- Geometry --------------------------------------------------------
-    # [TODO(measure)] Arm length = distance from the frame center to a motor
-    # shaft. Measure motor-to-motor diagonal (wheelbase) and divide by 2.
-    # 4040 props imply a ~180 mm wheelbase class, so ~0.09 m is the estimate.
-    arm_length_m: float = 0.09          # [EST]
+    # Arm length = frame center to a motor shaft. User-measured motor-to-motor
+    # diagonal 0.23 m, so 0.115 m. Square X frame: each motor sits 0.115/sqrt(2)
+    # = 0.0813 m forward/back and left/right of center (see lever_arm_m).
+    arm_length_m: float = 0.115         # [SRC] user-measured diagonal / 2
+    # Diatone 4040 3-blade: 4.0" diameter, 4.0" pitch. Adjacent motors are
+    # 0.163 m apart, so ~6 cm tip-to-tip clearance.
+    prop_diameter_m: float = 0.1016     # [SRC]
 
     # --- Propulsion ------------------------------------------------------
     # [TODO(measure)] Max thrust PER MOTOR at full throttle on a 4S pack.
@@ -70,6 +73,11 @@ class DD24Params:
         return self.mass_kg * 9.81
 
     @property
+    def lever_arm_m(self) -> float:
+        """Roll/pitch moment arm of each motor on a square X frame."""
+        return self.arm_length_m / 2 ** 0.5
+
+    @property
     def max_total_thrust_N(self) -> float:
         return self.max_thrust_per_motor_N * self.n_rotors
 
@@ -93,7 +101,7 @@ if __name__ == "__main__":
     p = DD24
     print(f"mass (AUW):            {p.mass_kg:.3f} kg   [user-measured]")
     print(f"component lower bound: {p.component_mass_lower_bound_kg():.3f} kg")
-    print(f"arm length:            {p.arm_length_m:.3f} m   [EST - MEASURE THIS]")
+    print(f"arm length:            {p.arm_length_m:.3f} m   (lever {p.lever_arm_m:.4f} m)")
     print(f"max thrust/motor:      {p.max_thrust_per_motor_N:.2f} N   [EST - MEASURE THIS]")
     print(f"max total thrust:      {p.max_total_thrust_N:.2f} N")
     print(f"thrust-to-weight:      {p.thrust_to_weight:.2f}")
