@@ -22,6 +22,18 @@ the DD24 flies — turns those into motor outputs. Isaac Sim stays the physics.
   can trip this, so the bridge must keep sending, or we run the binary without the
   wrapper.
 
+## What the real DD24 runs
+- **PX4 1.15.4** (`diatone_mamba-f405-mk2_default.bin`), autostart 4001 (quad-X).
+- `fc_firmware/duckiedrone-px4-v4.params` sets geometry, sensors and battery,
+  and **no rate/attitude gains**, so the DD24 flies PX4's compiled-in v1.15.4
+  defaults (recorded in `sim_px4/px4_defaults.py`). The only controller-relevant
+  override is `IMU_DGYRO_CUTOFF` 20 Hz (default 30).
+- **No GPS, mag, or optical flow** (`SYS_HAS_GPS/MAG 0`, `EKF2_GPS_CTRL 0`,
+  `EKF2_OF_CTRL 0`). Height comes from the downward ToF (`EKF2_HGT_REF 2`,
+  `EKF2_RNG_CTRL 2`). PX4 knows attitude and height only, which is enough for
+  rate+thrust offboard. So the bridge sends **HIL_SENSOR (IMU) + DISTANCE_SENSOR**,
+  not HIL_GPS, and loads the DD24 param file into each SITL instance.
+
 So dt-px4 is not tied to RotorPy: anything speaking the `simulator_mavlink`
 protocol can be its physics. That's what the Isaac Sim bridge below does.
 
@@ -29,7 +41,7 @@ protocol can be its physics. That's what the Isaac Sim bridge below does.
 ```
  Isaac Lab DronePX4Env (GPU, N envs, physics 250 Hz)
    │  IMU/mag/baro from body state  ──HIL_SENSOR 250 Hz──▶ ┐
-   │  position source               ──HIL_GPS 10 Hz ─────▶ │ TCP 4560+i   PX4 SITL i
+   │  ToF height                    ──DISTANCE_SENSOR ───▶ │ TCP 4560+i   PX4 SITL i
    │  ◀── HIL_ACTUATOR_CONTROLS (4 motors, 0..1) ───────── ┘              (dt-px4.sif)
    │  motor cmd → per-motor thrust → force/torque on body                  ▲
    │                                                                       │
@@ -58,7 +70,8 @@ One PX4 per env, each a CPU process, so tens of envs, not thousands.
 | `environments/px4_rate_emulator.py` | Batched torch PX4 rate PID + allocator (3a). |
 | `sim_px4/mavlink_bridge.py` | pymavlink, per-instance TCP sim link + UDP offboard link; packs HIL_SENSOR/HIL_GPS from env tensors, unpacks HIL_ACTUATOR_CONTROLS; arm + OFFBOARD at reset. Reference: Pegasus `px4_mavlink_backend.py`. |
 | `sim_px4/launch_px4.sh` | Starts N `apptainer exec dt-px4.sif px4 -i k` with DD24 params, waits for TCP 4560+k. |
-| `sim_px4/dd24.params` | DD24 PX4 params: geometry (`CA_ROTOR*`), `MPC_THR_HOVER`, rate gains. Best source: export from the real drone (QGC → Parameters → Save). |
+| `sim_px4/px4_defaults.py` | **Done.** v1.15.4 rate/attitude gains, filters, quad-X geometry. |
+| (params) | Reuse `fc_firmware/duckiedrone-px4-v4.params`, loaded into each SITL instance at start. |
 
 Pegasus (`sim_px4/pegasus_dd24_px4.py`) is **dropped as the runtime**: it targets
 Isaac Sim 4.5, not 5.0, and isn't an Isaac Lab env. We keep it only as protocol
@@ -68,11 +81,11 @@ reference.
 1. **Episode reset with PX4.** PX4's estimator and arming state don't teleport.
    Options: restart the instance (~seconds), or land → disarm → reset → re-arm.
    Decide after measuring restart time on Oscar.
-2. **PX4 version match.** dt-px4's PX4 version must match the DD24's firmware, or
-   params and gains differ. Check `px4 ver` and the drone's version.
-3. **Estimator inputs.** The real DD24 estimates height from the bottom ToF (and
-   camera flow), not GPS. Start with sim GPS for bring-up, then feed the same
-   sensors the real drone uses (distance sensor / optical flow) for sim-to-real.
+2. **PX4 version match.** The DD24 runs 1.15.4. dt-px4's SITL version must match,
+   or the default gains differ. Check `px4 ver` in the .sif.
+3. **No horizontal position on the real drone.** The EKF has no GPS/flow/vision,
+   so a position-holding policy must get x/y from somewhere else (camera
+   pipeline) or be limited to hover/attitude tasks. Decide before 3b.
 4. **Ports on shared nodes.** Apptainer shares the host network. Another user's
    PX4 on the same node collides on 4560/14540+i, so use a job-specific instance
    offset.
