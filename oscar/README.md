@@ -39,8 +39,13 @@ apptainer exec --nv --cleanenv --bind $S \
     --env ACCEPT_EULA=Y --env OMNI_KIT_ACCEPT_EULA=YES \
     --env PYTHONUSERBASE=$I/pyuser --env PIP_USER=1 --env PIP_CACHE_DIR=$I/cache/pip \
     $I/isaac-sim-5.0.0.sif bash -c "export PATH=$I/pyuser/bin:\$PATH; \
-        /isaac-sim/python.sh -m pip install cmake && cd $I/IsaacLab && ./isaaclab.sh -i none"
+        /isaac-sim/python.sh -m pip install cmake && \
+        /isaac-sim/python.sh -m pip install --no-build-isolation flatdict==4.0.1 && \
+        cd $I/IsaacLab && ./isaaclab.sh -i none"
 ```
+`flatdict==4.0.1` must be pre-built with the image's setuptools: under pip's build
+isolation it gets a new setuptools without `pkg_resources`, and core `isaaclab`
+silently fails to install (the other isaaclab_* packages still install).
 `-i none` skips the RL frameworks; this repo has its own PPO.
 
 ## Train

@@ -3,12 +3,12 @@
 On disk under `/oscar/scratch/zyan33/` (scratch is purged periodically):
 - `isaac/isaac-sim-5.0.0.sif`: **built, verified** (L40S visible, VERSION 5.0.0).
 - `isaac/IsaacLab`: v2.2.1 clone + `_isaac_sim -> /isaac-sim` link.
-- `isaac/pyuser`: Isaac Lab install target (README step 4). Check
+- `isaac/pyuser`: Isaac Lab installed here (incl. core isaaclab after the flatdict fix). Check
   `isaac/isaaclab_install.log` ends in `exit=0`; if not, re-run step 4.
 - `px4/dt-px4-ente-amd64.sif`: dt-px4 converted from Docker. Check `px4/build.log`.
 
 Next, in order:
-1. Verify imports: `apptainer exec --nv --cleanenv --bind /oscar/scratch/$USER
+1. Imports: core isaaclab installed 00:53; isaaclab_assets needs the running app (omni.client), so verify via the smoke train.
    --env PYTHONUSERBASE=/oscar/scratch/$USER/isaac/pyuser <sif>
    /isaac-sim/python.sh -c "import isaaclab, isaaclab_assets"`.
 2. Smoke train: `NUM_ENVS=64 ITERS=20 sbatch oscar/train_hover.sbatch`.
