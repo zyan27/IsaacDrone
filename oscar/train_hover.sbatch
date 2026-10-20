@@ -33,18 +33,20 @@ ISAAC_DIR="$SCRATCH_REAL/isaac"
 SIF="$(readlink -f "$SIF")"
 ISAACLAB_DIR="$(readlink -f "$ISAACLAB_DIR")"
 export ISAAC_CACHE="${ISAAC_CACHE:-$ISAAC_DIR/cache}"
-mkdir -p "$ISAAC_CACHE"/{kit,home}
+mkdir -p "$ISAAC_CACHE"/{kit,kitdata,kitlogs,home}
 
 # The container runs as $USER (not root), so Isaac Sim's caches land under $HOME.
 # --home points the container's HOME at scratch so they don't fill the home quota.
 # The .sif is read-only: Isaac Lab is pip-installed into PYTHONUSERBASE on scratch
-# (see README), and kit's own cache dir is bound to a writable scratch dir.
+# (see README), and kit's cache/data/logs dirs are bound to writable scratch dirs.
 # ACCEPT_EULA / OMNI_KIT_ACCEPT_EULA keep the container from blocking on prompts.
 apptainer exec --nv --cleanenv \
     --home "$ISAAC_CACHE/home" \
     --bind "$SCRATCH_REAL" \
     --bind "$REPO_DIR" \
     --bind "$ISAAC_CACHE/kit:/isaac-sim/kit/cache" \
+    --bind "$ISAAC_CACHE/kitdata:/isaac-sim/kit/data" \
+    --bind "$ISAAC_CACHE/kitlogs:/isaac-sim/kit/logs" \
     --env ACCEPT_EULA=Y \
     --env OMNI_KIT_ACCEPT_EULA=YES \
     --env PYTHONUSERBASE="$ISAAC_DIR/pyuser" \
