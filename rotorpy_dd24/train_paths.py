@@ -17,7 +17,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 from rotorpy.learning.quadrotor_environments import QuadrotorEnv, DEFAULT_RESET_OPTIONS
 from rotorpy.learning.quadrotor_reward_functions import vec_hover_reward
 from dd24_rotorpy_params import quad_params
-from rewards import make_goto_reward
+from rewards import make_goto_reward, make_precision_hover_reward
+from takeoff_env import TakeoffHoverEnv
 
 # cmd_ctbr = collective thrust + body rates. Maps directly to PX4 offboard rate
 # setpoints (ideal for the PX4 handoff), and works in float32 (cmd_vel/cmd_ctatt
@@ -54,8 +55,23 @@ HOVER_WEIGHTS = {"x": 1.0, "v": 0.3, "w": 0.1, "u": 1e-4}
 
 
 def build_env(num_envs, goal, task="hover", pos_bound=1.0):
-    """task='hover' uses rotorpy's vec_hover_reward (return to origin); 'goto'
-    uses make_goto_reward(goal). pos_bound = spawn radius (m) around origin."""
+    """Build the training env for a task:
+      'takeoff' : start at rest on the pad, climb to `goal`, hold it to cm
+                  precision (TakeoffHoverEnv + make_precision_hover_reward).
+      'hover'   : rotorpy's vec_hover_reward, random airborne spawn -> origin.
+      'goto'    : make_goto_reward(goal), random airborne spawn -> goal.
+    pos_bound = airborne spawn radius (m) for hover/goto; ignored for takeoff
+    (its start distribution lives in TakeoffHoverEnv.reset_idx)."""
+    if task == "takeoff":
+        return TakeoffHoverEnv(
+            num_envs=num_envs,
+            initial_states=make_initial_states(num_envs),
+            control_mode=CONTROL_MODE,
+            reward_fn=make_precision_hover_reward(goal),
+            quad_params=quad_params,
+            max_time=10,
+            goal=goal,
+        )
     if task == "hover":
         reward_fn = partial(vec_hover_reward, weights=HOVER_WEIGHTS)
     else:
@@ -78,8 +94,8 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--timesteps", type=int, default=200_000)
     p.add_argument("--num_envs", type=int, default=16)
-    p.add_argument("--task", choices=["hover", "goto"], default="hover")
-    p.add_argument("--goal", type=float, nargs=3, default=[0.0, 0.0, 0.0])
+    p.add_argument("--task", choices=["hover", "goto", "takeoff"], default="hover")
+    p.add_argument("--goal", type=float, nargs=3, default=[0.0, 0.0, 1.0])
     p.add_argument("--pos_bound", type=float, default=1.0)
     p.add_argument("--save", type=str, default="checkpoints/dd24_hover.zip")
     args = p.parse_args()

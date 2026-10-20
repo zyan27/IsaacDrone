@@ -35,7 +35,7 @@ def rollout(model, env, max_steps=1000):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--model", default="checkpoints/dd24_hover.zip")
-    p.add_argument("--task", choices=["hover", "goto"], default="hover")
+    p.add_argument("--task", choices=["hover", "goto", "takeoff"], default="hover")
     p.add_argument("--goal", type=float, nargs=3, default=[0.0, 0.0, 0.0])
     p.add_argument("--pos_bound", type=float, default=1.0)
     p.add_argument("--out", default="rotorpy_dd24/last_rollout.png")
@@ -48,9 +48,13 @@ def main():
 
     dist = np.linalg.norm(pos - goal, axis=1)
     final = dist[-1]
-    reached = final < 0.2
-    print(f"control_mode={CONTROL_MODE}  steps={len(t)}  "
-          f"final_dist={final:.3f} m  reached(<0.2m)={reached}")
+    # steady-state error over the last 2 s (precision = how tightly it holds)
+    dt = t[1] - t[0] if len(t) > 1 else 0.01
+    tail = max(1, int(2.0 / dt))
+    ss = dist[-tail:]
+    print(f"control_mode={CONTROL_MODE}  steps={len(t)}  final_dist={final:.3f} m  "
+          f"last2s mean={ss.mean():.3f} max={ss.max():.3f} m  "
+          f"tight(<0.05m)={ss.max() < 0.05}")
     print(f"start={pos[0].round(2)}  end={pos[-1].round(2)}  goal={goal}")
 
     fig = plt.figure(figsize=(11, 4.5))

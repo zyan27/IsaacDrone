@@ -21,10 +21,10 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class DD24Params:
     # --- Mass ------------------------------------------------------------
-    # All-up flight weight ~0.80 kg (user-measured). The 1.76 kg store/manual
-    # figure is the kit/box weight, not flight mass. Scales thrust-to-weight
-    # directly, so re-confirm on a scale if the build changes.
-    mass_kg: float = 0.80  # [SRC] user-measured AUW
+    # All-up flight weight 0.82704 kg (user-measured on a scale). The 1.76 kg
+    # store/manual figure is the kit/box weight, not flight mass. Scales
+    # thrust-to-weight directly, so re-confirm on a scale if the build changes.
+    mass_kg: float = 0.82704  # [SRC] user-measured AUW (827.04 g)
 
     # Component masses that are known, for a bottom-up sanity check vs the scale:
     motor_mass_kg: float = 0.028        # [SRC] DX2205, ~28 g each
