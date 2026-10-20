@@ -22,7 +22,11 @@ ISAAC_SIM_TAG="5.0.0"                        # confirm vs repo
 SIF_DIR="${SIF_DIR:-$HOME/scratch/isaac}"    # scratch, NOT home (image is ~10+ GB)
 # ------------------
 
-mkdir -p "$SIF_DIR"
+# apptainer's layer cache + build tmp default to ~/.apptainer and /tmp; keep the
+# ~10+ GB of layers off the home quota.
+export APPTAINER_CACHEDIR="${APPTAINER_CACHEDIR:-$SIF_DIR/apptainer-cache}"
+export APPTAINER_TMPDIR="${APPTAINER_TMPDIR:-$SIF_DIR/apptainer-tmp}"
+mkdir -p "$SIF_DIR" "$APPTAINER_CACHEDIR" "$APPTAINER_TMPDIR"
 cd "$SIF_DIR"
 
 echo "Building isaac-sim-${ISAAC_SIM_TAG}.sif in $SIF_DIR ..."
