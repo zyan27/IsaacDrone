@@ -22,18 +22,26 @@ The high-end `gpu-he` (V100) partition is **unusable** for Isaac Sim.
 # 1. Get the code onto Oscar
 git clone https://github.com/zyan27/IsaacDrone.git ~/IsaacDrone
 
-# 2. Build the Isaac Sim image (needs a free NGC account + API key)
-#    apptainer remote login --username '$oauthtoken' docker://nvcr.io
-bash ~/IsaacDrone/oscar/build_sif.sh          # -> ~/scratch/isaac/isaac-sim-*.sif
+# 2. Build the Isaac Sim image (~30 min; no NGC login needed, isaac-sim pulls anonymously)
+bash ~/IsaacDrone/oscar/build_sif.sh          # -> ~/scratch/isaac/isaac-sim-5.0.0.sif
 
-# 3. Clone Isaac Lab (version MUST match the repo; Isaac Sim 5.0 / Isaac Lab 2.x)
-git clone https://github.com/isaac-sim/IsaacLab.git ~/scratch/isaac/IsaacLab
+# 3. Clone Isaac Lab PINNED to v2.2.1 (the release for Isaac Sim 5.0; main has moved on)
+git clone --depth 1 --branch v2.2.1 https://github.com/isaac-sim/IsaacLab.git ~/scratch/isaac/IsaacLab
 cd ~/scratch/isaac/IsaacLab
-ln -s /isaac-sim _isaac_sim                   # point Isaac Lab at the in-container sim
-# install Isaac Lab into the container's python (run once, inside the .sif):
-apptainer exec --nv --env ACCEPT_EULA=Y ~/scratch/isaac/isaac-sim-5.0.0.sif \
-    bash -lc "cd ~/scratch/isaac/IsaacLab && ./isaaclab.sh -i"
+ln -s /isaac-sim _isaac_sim                   # dangles on the host, resolves in the container
+
+# 4. Install Isaac Lab (run once). Three Oscar gotchas, all handled below:
+#    - ~/scratch -> /oscar/scratch/$USER is not mounted in the container: bind it.
+#    - the .sif python is read-only: install into PYTHONUSERBASE on scratch.
+#    - isaaclab.sh wants cmake and falls back to `sudo apt-get`: pip-install cmake.
+S=/oscar/scratch/$USER; I=$S/isaac
+apptainer exec --nv --cleanenv --bind $S \
+    --env ACCEPT_EULA=Y --env OMNI_KIT_ACCEPT_EULA=YES \
+    --env PYTHONUSERBASE=$I/pyuser --env PIP_USER=1 --env PIP_CACHE_DIR=$I/cache/pip \
+    $I/isaac-sim-5.0.0.sif bash -c "export PATH=$I/pyuser/bin:\$PATH; \
+        /isaac-sim/python.sh -m pip install cmake && cd $I/IsaacLab && ./isaaclab.sh -i none"
 ```
+`-i none` skips the RL frameworks; this repo has its own PPO.
 
 ## Train
 ```bash

@@ -26,26 +26,30 @@ mkdir -p "$REPO_DIR/oscar/logs" "$REPO_DIR/checkpoints"
 
 # Isaac Sim caches assets/kit under $HOME by default; point them at scratch so
 # home quota isn't blown and startup is faster. Also accept the EULAs headlessly.
-export ISAAC_CACHE="${ISAAC_CACHE:-$HOME/scratch/isaac/cache}"
-mkdir -p "$ISAAC_CACHE"/{kit,ov,pip,glcache,computecache,logs,data,documents}
+# ~/scratch is a symlink to /oscar/scratch/$USER, which apptainer does NOT mount
+# by default, so bind the real scratch path or every ~/scratch path is missing.
+SCRATCH_REAL="$(readlink -f "$HOME/scratch")"
+ISAAC_DIR="$SCRATCH_REAL/isaac"
+SIF="$(readlink -f "$SIF")"
+ISAACLAB_DIR="$(readlink -f "$ISAACLAB_DIR")"
+export ISAAC_CACHE="${ISAAC_CACHE:-$ISAAC_DIR/cache}"
+mkdir -p "$ISAAC_CACHE"/{kit,home}
 
-# apptainer --nv exposes the GPU + driver. Bind the repo, Isaac Lab, and caches.
+# The container runs as $USER (not root), so Isaac Sim's caches land under $HOME.
+# --home points the container's HOME at scratch so they don't fill the home quota.
+# The .sif is read-only: Isaac Lab is pip-installed into PYTHONUSERBASE on scratch
+# (see README), and kit's own cache dir is bound to a writable scratch dir.
 # ACCEPT_EULA / OMNI_KIT_ACCEPT_EULA keep the container from blocking on prompts.
-apptainer exec --nv \
+apptainer exec --nv --cleanenv \
+    --home "$ISAAC_CACHE/home" \
+    --bind "$SCRATCH_REAL" \
+    --bind "$REPO_DIR" \
+    --bind "$ISAAC_CACHE/kit:/isaac-sim/kit/cache" \
     --env ACCEPT_EULA=Y \
     --env OMNI_KIT_ACCEPT_EULA=YES \
-    --bind "$REPO_DIR:$REPO_DIR" \
-    --bind "$ISAACLAB_DIR:$ISAACLAB_DIR" \
-    --bind "$ISAAC_CACHE/kit:/isaac-sim/kit/cache" \
-    --bind "$ISAAC_CACHE/ov:/root/.cache/ov" \
-    --bind "$ISAAC_CACHE/pip:/root/.cache/pip" \
-    --bind "$ISAAC_CACHE/glcache:/root/.cache/nvidia/GLCache" \
-    --bind "$ISAAC_CACHE/computecache:/root/.nv/ComputeCache" \
-    --bind "$ISAAC_CACHE/logs:/root/.nvidia-omniverse/logs" \
-    --bind "$ISAAC_CACHE/data:/root/.local/share/ov/data" \
-    --bind "$ISAAC_CACHE/documents:/root/Documents" \
+    --env PYTHONUSERBASE="$ISAAC_DIR/pyuser" \
     "$SIF" \
-    bash -lc "cd '$REPO_DIR' && \
+    bash -c "cd '$REPO_DIR' && \
         '$ISAACLAB_DIR/isaaclab.sh' -p train_rl_hover.py \
             --headless \
             --num_envs $NUM_ENVS \

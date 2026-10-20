@@ -257,9 +257,8 @@ class DroneHoverEnv(DirectRLEnv):
         root_state = self.drone.data.default_root_state[env_ids].clone()
         root_state[:, 0:3] += self.scene.env_origins[env_ids]
 
-        root_state[:, 0] = 0.0
-        root_state[:, 1] = 0.0
-        root_state[:, 2] = 0.5
+        # Keep each env's x/y origin (zeroing them stacks every drone on env_0).
+        root_state[:, 2] = self.scene.env_origins[env_ids, 2] + 0.5
 
         root_state[:, 7:13] = 0.0
 
