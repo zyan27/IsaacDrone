@@ -55,13 +55,18 @@ class DD24Params:
     # range for an 827 g 4" quad: Ixx~Iyy 2-4e-3, Izz 4-6e-3. PX4's default rate
     # gains are only stable here for Ixx >~ 3e-3 at this thrust (see
     # sim_px4/check_rate_stability.py), and the real DD24 flies on those gains.
-    inertia_kgm2: tuple = (3.5e-3, 3.5e-3, 5.0e-3)  # [EST]
+    # The real DD24 hovers steadily on those defaults (user, 2026-10-20), so
+    # the estimate sits in the stable region rather than the bottom-up ~1.7e-3.
+    inertia_kgm2: tuple = (5.0e-3, 5.0e-3, 8.0e-3)  # [EST]
     # First-order motor/ESC thrust lag. Typical 2205 + BLHeli: 15-30 ms.
     motor_time_constant_s: float = 0.02  # [EST]
 
-    # Yaw torque coefficient (reaction torque per unit thrust). [TODO] identify
-    # from logs or a bench test; carried over from the reference repo for now.
-    yaw_coeff: float = 1e-5              # [EST]
+    # Thrust vs ESC command: thrust ~ Fmax * u**2 (prop thrust ~ rpm^2, rpm ~ u).
+    # Predicts hover at u ~0.52; user flight: 0.40 barely lifts, 0.70 climbs.
+    thrust_curve_exponent: float = 2.0   # [EST]
+    # Prop reaction torque per newton of thrust (m). Typical 4" props: 0.01-0.02.
+    # The reference repo's 1e-5 gave the DD24 almost no yaw authority.
+    yaw_coeff: float = 0.016             # [EST]
 
     # --- Flight controller ----------------------------------------------
     fc_board: str = "mamba-f405-mk2"     # [SRC] PX4 target

@@ -24,6 +24,7 @@ import torch
 
 from environments.drone_hover_env import DroneHoverEnv, DroneHoverEnvCfg
 from controllers.rl_hover_controller import RLHoverController
+from visualization import Hud, make_target_markers, show_targets
 
 
 def main():
@@ -35,8 +36,8 @@ def main():
     # the 1 m hover target so climb, overshoot and drift stay visible.
     env_cfg.viewer.origin_type = "env"
     env_cfg.viewer.env_index = 0
-    env_cfg.viewer.eye = (0.75, 0.75, 1.2)
-    env_cfg.viewer.lookat = (0.0, 0.0, 0.85)
+    env_cfg.viewer.eye = (1.0, 1.0, 1.25)
+    env_cfg.viewer.lookat = (0.0, 0.0, 0.8)
 
     env = DroneHoverEnv(cfg=env_cfg, render_mode="rgb_array")
     controller = RLHoverController(device=env.device, checkpoint=args.rl_checkpoint)
@@ -54,12 +55,19 @@ def main():
         eye=[o + e for o, e in zip(origin, env_cfg.viewer.eye)],
         target=[o + t for o, t in zip(origin, env_cfg.viewer.lookat)],
     )
+    markers = make_target_markers()
+    show_targets(markers, env.scene.env_origins, env_cfg.hover_height)
+    hud = Hud("RL hover policy (Crazyflie, direct motor forces)", env_cfg.hover_height, args.seconds)
+
     for step in range(steps):
         with torch.inference_mode():
             actions = controller.act(obs["policy"])
             obs, _, terminated, truncated, _ = env.step(actions)
 
-        writer.append_data(env.render())
+        hud.add((step + 1) * dt, (env.drone.data.root_state_w[0, 0:3] - env.scene.env_origins[0]).cpu())
+        frame = env.render()
+        if frame.max() > 0:  # first frames are black while the renderer warms up
+            writer.append_data(hud.draw(frame))
 
         if step % 25 == 0:
             pos = env.drone.data.root_state_w[:, 0:3] - env.scene.env_origins
