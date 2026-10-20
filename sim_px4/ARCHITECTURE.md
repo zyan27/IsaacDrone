@@ -66,7 +66,7 @@ One PX4 per env, each a CPU process, so tens of envs, not thousands.
 ## Code to write
 | File | What |
 |---|---|
-| `environments/drone_ctbr_env.py` | `DirectRLEnv`: 4-dim action = (thrust, p, q, r) normalized; `controller="emulated" \| "px4"`. Physics dt 1/250, decimation 5 → 50 Hz policy. |
+| `environments/drone_px4_env.py` | **Done (emulated PX4).** CTBR action (thrust 0..1 + FRD rates) → `px4_rate_emulator` at 250 Hz → ESC/motor model (20 ms lag, thrust = Fmax·u²) → per-arm thrust + yaw torque on a DD24-mass/inertia body (CF mesh scaled to 0.23 m). `controller="sitl"` raises NotImplementedError until the MAVLink bridge exists. Demo: `play_px4.py`. |
 | `environments/px4_rate_emulator.py` | **Done.** Batched torch port of v1.15.4 gyro LPFs, rate PID (i_factor, anti-windup) and SequentialDesaturation allocator (airmode off). |
 | `sim_px4/probe_px4_params.sh` | **Done.** Boots dt-px4 SITL (SIH) and prints effective params. |
 | `sim_px4/mavlink_bridge.py` | pymavlink, per-instance TCP sim link + UDP offboard link; packs HIL_SENSOR/HIL_GPS from env tensors, unpacks HIL_ACTUATOR_CONTROLS; arm + OFFBOARD at reset. Reference: Pegasus `px4_mavlink_backend.py`. |
