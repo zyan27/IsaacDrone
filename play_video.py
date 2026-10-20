@@ -31,12 +31,12 @@ def main():
     env_cfg.scene.num_envs = args.num_envs
     env_cfg.hover_height = 1.0
     # Crazyflie is ~9 cm across; the default 7.5 m world viewer makes it a speck.
-    # Chase env_0's drone instead (eye/lookat are offsets from its root).
-    env_cfg.viewer.origin_type = "asset_root"
-    env_cfg.viewer.asset_name = "drone"
+    # Fixed camera near env_0 (eye/lookat are offsets from its origin), looking at
+    # the 1 m hover target so climb, overshoot and drift stay visible.
+    env_cfg.viewer.origin_type = "env"
     env_cfg.viewer.env_index = 0
-    env_cfg.viewer.eye = (0.5, 0.5, 0.3)
-    env_cfg.viewer.lookat = (0.0, 0.0, 0.0)
+    env_cfg.viewer.eye = (1.2, 1.2, 1.3)
+    env_cfg.viewer.lookat = (0.0, 0.0, 0.8)
 
     env = DroneHoverEnv(cfg=env_cfg, render_mode="rgb_array")
     controller = RLHoverController(device=env.device, checkpoint=args.rl_checkpoint)

@@ -41,11 +41,20 @@ class DD24Params:
     # --- Propulsion ------------------------------------------------------
     # [TODO(measure)] Max thrust PER MOTOR at full throttle on a 4S pack.
     # Get it from a thrust stand or the motor/prop manufacturer chart.
-    # DX2205 2300KV on 4S + 4040 is roughly ~1.0-1.2 kgf per motor.
-    max_thrust_per_motor_N: float = 10.8  # [EST] ~1.1 kgf * 9.81
+    # Community bench data for 2205 2300KV + 4"/4.5" triblades on 4S: ~700-800 gf
+    # per motor at full throttle on a fresh pack (TWR ~3.6 at 827 g).
+    max_thrust_per_motor_N: float = 7.36  # [EST] 0.75 kgf * 9.81, bench data, not this drone
     kv: float = 2300.0                   # [SRC] motor KV
     battery_cells: int = 4               # [SRC] 4S
     battery_nominal_V: float = 14.8      # [SRC]
+
+    # Inertia about the CG, body axes. [TODO(measure)] bifilar pendulum. Expected
+    # range for an 827 g 4" quad: Ixx~Iyy 2-4e-3, Izz 4-6e-3. PX4's default rate
+    # gains are only stable here for Ixx >~ 3e-3 at this thrust (see
+    # sim_px4/check_rate_stability.py), and the real DD24 flies on those gains.
+    inertia_kgm2: tuple = (3.5e-3, 3.5e-3, 5.0e-3)  # [EST]
+    # First-order motor/ESC thrust lag. Typical 2205 + BLHeli: 15-30 ms.
+    motor_time_constant_s: float = 0.02  # [EST]
 
     # Yaw torque coefficient (reaction torque per unit thrust). [TODO] identify
     # from logs or a bench test; carried over from the reference repo for now.
