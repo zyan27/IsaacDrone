@@ -60,8 +60,9 @@ def show_targets(markers: VisualizationMarkers, env_origins: torch.Tensor, targe
 class Hud:
     """Text block, altitude strip chart and top-down drift plot for one drone."""
 
-    def __init__(self, title: str, target_z: float, seconds: float):
+    def __init__(self, title: str, target_z: float, seconds: float, room_half: float | None = None):
         self.title = title
+        self.room_half = room_half
         self.target_z = target_z
         self.seconds = seconds
         self.t, self.z, self.xy = [], [], []
@@ -72,33 +73,30 @@ class Hud:
         self.xy.append((float(pos_local[0]), float(pos_local[1])))
 
     def draw(self, frame: np.ndarray, extra_lines: list[str] | None = None) -> np.ndarray:
-        img = np.ascontiguousarray(frame[..., :3])
-        h, w = img.shape[:2]
+        """Scene on the left, readouts on a side panel so nothing covers the drone."""
+        scene = np.ascontiguousarray(frame[..., :3])
+        h = scene.shape[0]
+        pw = 480
+        img = np.full((h, pw, 3), 24, np.uint8)
         font = cv2.FONT_HERSHEY_SIMPLEX
         white, red, green, grey = (255, 255, 255), (230, 40, 40), (60, 220, 100), (150, 150, 150)
 
-        # Text block, top left.
+        # Text block.
         z, (x, y) = self.z[-1], self.xy[-1]
         lines = [
-            self.title,
             f"t        {self.t[-1]:5.2f} s",
             f"altitude {z:5.3f} m   target {self.target_z:.2f} m",
             f"error    {z - self.target_z:+6.3f} m",
-            f"drift    {np.hypot(x, y):5.3f} m  (x {x:+.2f}, y {y:+.2f})",
+            f"off ctr  {np.hypot(x, y):5.3f} m  (x {x:+.2f}, y {y:+.2f})",
         ] + (extra_lines or [])
-        box_h = 14 + 26 * len(lines)
-        box_w = 30 + max(cv2.getTextSize(line, font, 0.6, 1)[0][0] for line in lines)
-        overlay = img.copy()
-        cv2.rectangle(overlay, (10, 10), (10 + box_w, 10 + box_h), (0, 0, 0), -1)
-        img = cv2.addWeighted(overlay, 0.55, img, 0.45, 0)
+        cv2.putText(img, self.title, (14, 26), font, 0.52, white, 1, cv2.LINE_AA)
         for i, line in enumerate(lines):
-            cv2.putText(img, line, (20, 36 + 26 * i), font, 0.6, white, 1, cv2.LINE_AA)
+            cv2.putText(img, line, (14, 52 + 21 * i), font, 0.46, white, 1, cv2.LINE_AA)
+        top = 52 + 21 * len(lines) + 4
 
-        # Altitude strip chart, bottom left.
-        cx, cy, cw, ch = 10, h - 190, 420, 180
-        overlay = img.copy()
-        cv2.rectangle(overlay, (cx, cy), (cx + cw, cy + ch), (0, 0, 0), -1)
-        img = cv2.addWeighted(overlay, 0.55, img, 0.45, 0)
+        # Altitude strip chart.
+        cx, cy, cw, ch = 10, top, pw - 20, 150
+        cv2.rectangle(img, (cx, cy), (cx + cw, cy + ch), (60, 60, 60), 1)
         z_max = max(1.5 * self.target_z, max(self.z) * 1.1)
         to_px = lambda tt, zz: (  # noqa: E731
             int(cx + 40 + (cw - 50) * tt / self.seconds),
@@ -115,20 +113,20 @@ class Hud:
         if len(pts) > 1:
             cv2.polylines(img, [pts], False, green, 2, cv2.LINE_AA)
 
-        # Top-down drift plot, bottom right (+-0.5 m box, target at center).
-        s, half = 180, 0.5
-        dx, dy = w - s - 10, h - s - 10
-        overlay = img.copy()
-        cv2.rectangle(overlay, (dx, dy), (dx + s, dy + s), (0, 0, 0), -1)
-        img = cv2.addWeighted(overlay, 0.55, img, 0.45, 0)
+        # Top-down plot of the room (or +-0.5 m), target at center.
+        half = self.room_half or 0.5
+        s = min(pw - 20, h - (cy + ch) - 20)
+        dx, dy = (pw - s) // 2, cy + ch + 10
+        cv2.rectangle(img, (dx, dy), (dx + s, dy + s), (60, 60, 60), 1)
         to_xy = lambda px_, py_: (int(dx + s / 2 - py_ / half * s / 2), int(dy + s / 2 - px_ / half * s / 2))  # noqa: E731
         c = to_xy(0, 0)
-        cv2.circle(img, c, int(0.15 / half * s / 2), (60, 160, 80), 1, cv2.LINE_AA)
+        cv2.circle(img, c, max(2, int(0.15 / half * s / 2)), (60, 160, 80), 1, cv2.LINE_AA)
         cv2.drawMarker(img, c, red, cv2.MARKER_CROSS, 12, 1)
         trail = np.array([to_xy(a, b) for a, b in self.xy], np.int32)
         if len(trail) > 1:
             cv2.polylines(img, [trail], False, green, 1, cv2.LINE_AA)
         cv2.circle(img, to_xy(*self.xy[-1]), 4, white, -1)
-        cv2.putText(img, "top view +-0.5 m", (dx + 6, dy + 16), font, 0.42, white, 1, cv2.LINE_AA)
+        label = f"top view, walls at +-{half:.1f} m" if self.room_half else "top view +-0.5 m"
+        cv2.putText(img, label, (dx + 6, dy + 16), font, 0.42, white, 1, cv2.LINE_AA)
         cv2.putText(img, "x up, y left", (dx + 6, dy + s - 8), font, 0.38, grey, 1, cv2.LINE_AA)
-        return img
+        return np.concatenate([scene, img], axis=1)
