@@ -43,6 +43,10 @@ def main():
     obs_dim, state_dim = cfg.observation_space, cfg.state_space
 
     actor = PX4Actor(obs_dim).to(dev)
+    # Start near a zero action (hover thrust, zero rates) instead of a random thrash.
+    with torch.no_grad():
+        actor.net[-1].weight.mul_(0.01)
+        actor.net[-1].bias.zero_()
     critic = mlp(state_dim, 1).to(dev)
     log_std = nn.Parameter(torch.full((4,), -1.0, device=dev))
     optimizer = optim.Adam(list(actor.parameters()) + list(critic.parameters()) + [log_std], lr=3e-4)

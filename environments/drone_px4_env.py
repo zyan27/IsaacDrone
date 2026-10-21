@@ -85,6 +85,7 @@ class DronePX4EnvCfg(DirectRLEnvCfg):
     room_height_m = 2.5
     wall_clearance_m = 0.17   # arm 0.115 + prop radius 0.05
     spawn_xy_range_m = 0.8
+    crash_penalty = -10.0
 
     # Sensor model (1-sigma). ToF: 5x VL53L1X (bottom, front, left, right, top)
     # on the DD24-B, read by the Pi through the HUT.
@@ -243,18 +244,23 @@ class DronePX4Env(DirectRLEnv):
 
     def _get_rewards(self):
         # Ground truth is fine here: the reward is only used in training.
+        # Every term is >= 0 while flying, so staying airborne always beats crashing
+        # (a negative per-step reward taught the first policy to flip over at once).
         d = self.drone.data
-        z = d.root_pos_w[:, 2] - self.scene.env_origins[:, 2]
-        xy = d.root_pos_w[:, 0:2] - self.scene.env_origins[:, 0:2]
-        return (
-            1.0
-            - 2.0 * (z - self.cfg.hover_height).abs()
-            - 1.0 * torch.linalg.norm(xy, dim=-1)
-            - 0.3 * torch.linalg.norm(d.root_lin_vel_w[:, 0:2], dim=-1)
-            - 0.3 * d.root_lin_vel_w[:, 2].abs()
-            - 0.3 * self._tilt()
-            - 0.05 * torch.linalg.norm(d.root_ang_vel_b, dim=-1)
+        pos = d.root_pos_w - self.scene.env_origins
+        z_err = (pos[:, 2] - self.cfg.hover_height).abs()
+        xy_err = torch.linalg.norm(pos[:, 0:2], dim=-1)
+        speed = torch.linalg.norm(d.root_lin_vel_w, dim=-1)
+        spin = torch.linalg.norm(d.root_ang_vel_b, dim=-1)
+        r = (
+            0.25                                 # alive
+            + 1.0 * torch.exp(-3.0 * z_err)
+            + 0.75 * torch.exp(-2.0 * xy_err)
+            + 0.25 * torch.exp(-4.0 * self._tilt())
+            + 0.25 * torch.exp(-1.0 * speed)
+            + 0.25 * torch.exp(-0.5 * spin)
         )
+        return torch.where(self.reset_terminated, torch.full_like(r, self.cfg.crash_penalty), r)
 
     def _tilt(self):
         up_b = quat_apply_inverse(self.drone.data.root_quat_w, torch.tensor([0.0, 0.0, 1.0], device=self.device).expand(self.num_envs, 3))
