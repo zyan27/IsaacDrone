@@ -72,7 +72,7 @@ Checkpoint lands at `checkpoints/rl_hover.pt`.
    under `~/scratch`, never `~` (home quota is small).
 
 ## Visualize on Oscar (headless MP4)
-On a GPU node (salloc), render a rollout with a camera chasing env_0's drone:
+On a GPU node (salloc), render a rollout from a fixed camera (target and HUD shown):
 ```bash
 bash oscar/run_isaac.sh play_video.py --headless --enable_cameras \
     --rl_checkpoint checkpoints/rl_hover.pt --out videos/rl_hover.mp4
