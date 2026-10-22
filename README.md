@@ -99,15 +99,32 @@ bash oscar/run_isaac.sh play_video.py --headless --enable_cameras \
 ---
 
 ## Local install (Linux + RTX GPU)
+Order matters: Isaac Sim **before** Isaac Lab, and Isaac Lab pinned to **v2.2.1**.
 ```bash
+sudo apt install cmake build-essential                     # Isaac Lab builds a few packages from source
 conda create -n droneIsaac5.0 python=3.11 && conda activate droneIsaac5.0
-conda install cuda
+pip install --upgrade pip
 pip install torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cu128
 pip install "isaacsim[all,extscache]==5.0.0" --extra-index-url https://pypi.nvidia.com
-git clone --branch v2.2.1 https://github.com/isaac-sim/IsaacLab.git && cd IsaacLab && ./isaaclab.sh --install && cd ..
+isaacsim --help >/dev/null    # first run: type "Yes" to accept the NVIDIA EULA (or export OMNI_KIT_ACCEPT_EULA=YES)
+
+git clone --branch v2.2.1 https://github.com/isaac-sim/IsaacLab.git
+cd IsaacLab
+pip install "setuptools<81" wheel                         # newer setuptools dropped pkg_resources
+pip install --no-build-isolation flatdict==4.0.1          # otherwise core isaaclab silently fails to install
+./isaaclab.sh --install none                              # "none" = skip RL frameworks; this repo has its own PPO
+python -c "import isaaclab, isaaclab_assets; print('isaaclab ok')"
+cd ..
 # optional, only for main.py:
 git clone https://github.com/NVlabs/curobo.git && pip install -e ./curobo --no-build-isolation
 ```
+If `./isaaclab.sh --install` still fails:
+- **`isaaclab` imports fail after a "successful" install:** scroll up for a `flatdict` / `pkg_resources` error and rerun the two `pip install` lines above.
+- **`cmake` or `gcc` not found:** install them with apt (first line).
+- **Errors mentioning Isaac Sim 5.1 / 6.0:** you cloned Isaac Lab `main`. Use `--branch v2.2.1`.
+- **The install hangs:** it's waiting on the EULA prompt. Run `export OMNI_KIT_ACCEPT_EULA=YES` and retry.
+- **The wrong Python is used:** run `conda activate droneIsaac5.0` first. `isaaclab.sh` uses the active conda env's python.
+
 Run scripts from the repo root. Leave off `--headless` to get the GUI.
 ```bash
 python train_rl_px4.py --headless --num_envs 1024 --iters 600
