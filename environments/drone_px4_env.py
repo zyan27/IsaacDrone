@@ -12,20 +12,26 @@
     Isaac Sim rigid body with DD24 mass / inertia
 
 The task is the real-drone test: start on the floor, climb straight up to a
-commanded height, hold, come straight down, land. The policy sees only what the
-DD24 reliably gives the Pi (flight logs 2026-10-25, data/flight_logs/):
+commanded height, hold it over the takeoff spot, come straight down, land. The
+policy sees only what the DD24 reliably gives the Pi (flight logs 2026-10-25,
+data/flight_logs/):
   - the downward ToF (on the drone: /noducksgiven/right_tof_driver_node/range,
     the only one that reads ~0 on the floor and tracks the hops)
+  - the front / left / right ToFs, ranging off the net enclosure (repeatable
+    returns, 5-40 mm noise at rest in the logs): these make sideways drift visible
   - /mavros/imu/data: attitude quaternion, gyro, accelerometer
 PX4's local position / vertical velocity is not used: in the logs it drifts by
-metres while the drone sits still. Side / top ToFs are not used either (net walls).
+metres while the drone sits still. The up ToF is not used (mostly out of range).
 
-Every sensor stream is sampled-and-held at its own rate, arrives late, and drops
-out (the logs: ToF 17-20 Hz, IMU 50 Hz with gaps up to 1 s); the policy also sees
-each stream's sample age, which the Pi computes as now - header.stamp.
+Timing matches the drone: PX4's rate loop runs at 400 Hz (the DD24's is 800,
+IMU_GYRO_RATEMAX), the policy decides at 20 Hz (the ToFs only update at ~17 Hz).
+Every sensor stream is sampled-and-held at its own rate, arrives late, drops out,
+and a ToF with no return publishes nothing (the drone's 999s); the policy also
+sees each stream's sample age, which the Pi computes as now - header.stamp.
 
-Mass, inertia, motor lag and thrust (hover thrust 0.42-0.52 around the logged
-0.47) are randomised so the policy doesn't depend on the exact estimates.
+Randomised so the policy doesn't depend on the exact estimates: mass, inertia,
+motor lag, thrust (hover thrust 0.42-0.52 around the logged 0.47), CG offset
+(battery placement), IMU mounting tilt, net enclosure size and ToF range.
 
 Visual mesh is the Crazyflie scaled to the DD24's 0.23 m motor diagonal; mass and
 inertia are overridden to the DD24 values, so the CF mesh's own are irrelevant.
@@ -69,16 +75,17 @@ def policy_to_ctbr(a: torch.Tensor, hover_cmd: float = POLICY_HOVER_THRUST) -> t
 @configclass
 class DronePX4EnvCfg(DirectRLEnvCfg):
     episode_length_s = 20.0
-    decimation = 5  # 250 Hz physics + PX4 loop, 50 Hz commander
+    decimation = 20  # 400 Hz physics + PX4 loop, 20 Hz commander
     # action = [thrust 0..1, roll rate, pitch rate, yaw rate (FRD, rad/s)]
     action_space = 4
     # Policy observation (each sensor value is the latest sample of its stream):
-    #   down ToF (1), attitude quat wxyz (4), gyro FRD (3), accel FRD (3)   = 11 held values
-    #   sample age, s (2: ToF, IMU), last CTBR setpoint (4), commanded height (1)
-    observation_space = 18
+    #   ToF down, front, left, right (4), attitude quat wxyz (4), gyro FRD (3),
+    #   accel FRD (3)                                                    = 14 held values
+    #   sample age, s (5: 4 ToF, IMU), last CTBR setpoint (4), commanded height (1)
+    observation_space = 24
     # Training-only critic also gets ground truth: pos error (3), world lin vel (3)
-    state_space = 24
-    sim: SimulationCfg = SimulationCfg(dt=1 / 250, render_interval=decimation, gravity=(0.0, 0.0, -9.81))
+    state_space = 30
+    sim: SimulationCfg = SimulationCfg(dt=1 / 400, render_interval=decimation, gravity=(0.0, 0.0, -9.81))
     scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=1, env_spacing=4.0, replicate_physics=True)
     terrain = TerrainImporterCfg(prim_path="/World/ground", terrain_type="plane", collision_group=-1)
     robot = CRAZYFLIE_CFG.replace(
@@ -98,16 +105,22 @@ class DronePX4EnvCfg(DirectRLEnvCfg):
     target_speed_mps = 0.3
     max_tilt_rad = 1.0
 
-    # Net enclosure around each drone (visual walls; touching one ends the episode).
+    # Net enclosure around each drone: each of the 4 walls sits 0.8-2.0 m from the
+    # takeoff spot, drawn per episode (so the drone starts anywhere in a 1.6-4 m box).
+    # The side ToFs range off it; touching it ends the episode. Visual walls (videos)
+    # are drawn at room_half_width_m, so playback fixes the range to that.
     room_half_width_m = 1.5
+    wall_dist_range_m = (0.8, 2.0)
     room_height_m = 2.5
     wall_clearance_m = 0.17   # arm 0.115 + prop radius 0.05
-    spawn_xy_range_m = 0.5
+    spawn_xy_range_m = 0.0
     crash_penalty = -10.0
 
     # Sensor model (1-sigma). Down ToF: VL53L1X, reads ~0 on the floor, ~1.5 mm
     # noise at rest; the logs show ~1 cm in flight.
-    tof_range_max_m = 2.0
+    tof_range_max_m = 2.0               # down ToF
+    side_tof_range_m = (2.0, 3.5)       # side ToFs off the net, per episode; beyond = no return
+    tof_invalid_prob = 0.05             # random no-return readings
     tof_noise_m = 0.01
     att_noise_rad = 0.01
     gyro_noise_rps = 0.003
@@ -119,10 +132,10 @@ class DronePX4EnvCfg(DirectRLEnvCfg):
     imu_rate_hz = (35.0, 60.0)
     tof_latency_s = (0.010, 0.060)
     imu_latency_s = (0.002, 0.025)
-    dropout_per_s = (0.1, 0.3)    # ToF, IMU
+    dropout_per_s = (0.1, 0.3)    # per stream
     dropout_s = (0.05, 1.0)
     age_clip_s = 1.0
-    cmd_latency_s = (0.010, 0.050)  # Pi -> mavros -> PX4 setpoint delay
+    cmd_latency_s = (0.010, 0.080)  # Pi -> mavros -> PX4 setpoint delay + timer jitter
 
     # Physical parameters and their per-env randomisation (multiplicative unless noted).
     mass_kg = DD24.mass_kg
@@ -135,6 +148,8 @@ class DronePX4EnvCfg(DirectRLEnvCfg):
     mass_scale = (0.9, 1.1)
     inertia_scale = (0.7, 1.3)
     motor_tau_s = (0.01, 0.04)          # absolute
+    cg_offset_m = 0.015                 # +- in body x and y (battery placement)
+    imu_tilt_rad = math.radians(2.0)    # +- roll / pitch mounting error
 
 
 class DronePX4Env(DirectRLEnv):
@@ -152,6 +167,12 @@ class DronePX4Env(DirectRLEnv):
         self.motor_tau = u(cfg.motor_tau_s)
         self.fmax = torch.zeros(n, device=dev)
         self._set_mass_properties(u(cfg.inertia_scale))
+        self.cg_offset = torch.zeros(n, 2, device=dev)
+        self.imu_mis = torch.zeros(n, 4, device=dev)
+        self.imu_mis[:, 0] = 1.0
+        self.wall_lo = torch.full((n, 2), -cfg.room_half_width_m, device=dev)
+        self.wall_hi = torch.full((n, 2), cfg.room_half_width_m, device=dev)
+        self.side_range = torch.full((n,), cfg.side_tof_range_m[1], device=dev)
 
         self.px4 = PX4RateEmulator(n, self.physics_dt, dev)
         self.ctbr = torch.zeros(n, 4, device=dev)       # last setpoint sent to PX4
@@ -169,22 +190,26 @@ class DronePX4Env(DirectRLEnv):
         self.force_b = torch.zeros(n, 1, 3, device=dev)
         self.torque_b = torch.zeros(n, 1, 3, device=dev)
 
-        # Sensor streams: raw vector = [tof 1, quat 4, gyro 3, accel 3];
-        # stream 0 = down ToF, 1 = IMU (quat + gyro + accel, one mavros topic).
-        self.col_stream = torch.tensor([0] + [1] * 10, device=dev)
-        self.stream_rate = [cfg.tof_rate_hz, cfg.imu_rate_hz]
-        self.stream_lat = [cfg.tof_latency_s, cfg.imu_latency_s]
+        # Sensor streams: raw vector = [tof down/front/left/right 4, quat 4, gyro 3, accel 3];
+        # streams 0-3 = each ToF, 4 = IMU (quat + gyro + accel, one mavros topic).
+        # A ToF with no return is NaN in the raw vector and publishes nothing.
+        self.n_streams = 5
+        self.col_stream = torch.tensor([0, 1, 2, 3] + [4] * 10, device=dev)
+        self.stream_first_col = torch.tensor([0, 1, 2, 3, 4], device=dev)
+        self.stream_rate = [cfg.tof_rate_hz] * 4 + [cfg.imu_rate_hz]
+        self.stream_lat = [cfg.tof_latency_s] * 4 + [cfg.imu_latency_s]
         max_lat = max(hi for _, hi in self.stream_lat)
         self.hist_len = int(math.ceil(max_lat / self.physics_dt)) + 2
-        self.hist = torch.zeros(self.hist_len, n, 11, device=dev)
+        self.hist = torch.zeros(self.hist_len, n, 14, device=dev)
         self.hist_ptr = 0
-        self.held = torch.zeros(n, 11, device=dev)
-        self.age = torch.zeros(n, 2, device=dev)
-        self.period = torch.ones(n, 2, device=dev)
-        self.timer = torch.zeros(n, 2, device=dev)
-        self.lat_steps = torch.zeros(n, 2, dtype=torch.long, device=dev)
-        self.drop_rate = torch.zeros(n, 2, device=dev)
-        self.drop_left = torch.zeros(n, 2, device=dev)
+        self.held = torch.zeros(n, 14, device=dev)
+        k = self.n_streams
+        self.age = torch.zeros(n, k, device=dev)
+        self.period = torch.ones(n, k, device=dev)
+        self.timer = torch.zeros(n, k, device=dev)
+        self.lat_steps = torch.zeros(n, k, dtype=torch.long, device=dev)
+        self.drop_rate = torch.zeros(n, k, device=dev)
+        self.drop_left = torch.zeros(n, k, device=dev)
         self.cmd_hist_len = int(math.ceil(cfg.cmd_latency_s[1] / self.physics_dt)) + 1
         self.cmd_hist = torch.zeros(self.cmd_hist_len, n, 4, device=dev)
         self.cmd_delay = torch.zeros(n, dtype=torch.long, device=dev)
@@ -300,6 +325,10 @@ class DronePX4Env(DirectRLEnv):
         self.torque_b[:, 0, 0] = (self.motor_y * thrust).sum(-1)
         self.torque_b[:, 0, 1] = (-self.motor_x * thrust).sum(-1)
         self.torque_b[:, 0, 2] = (self.motor_yaw_sign * self.cfg.yaw_coeff * thrust).sum(-1)
+        # Thrust acts at the frame centre, the CG sits cg_offset away: moment about the CG.
+        total = thrust.sum(-1)
+        self.torque_b[:, 0, 0] -= self.cg_offset[:, 1] * total
+        self.torque_b[:, 0, 1] += self.cg_offset[:, 0] * total
         self.drone.set_external_force_and_torque(self.force_b, self.torque_b, body_ids=self.body_id)
 
     # --- sensors -------------------------------------------------------------------
@@ -307,22 +336,41 @@ class DronePX4Env(DirectRLEnv):
         """Body height above its resting height (0 when sitting on the floor)."""
         return self.drone.data.root_pos_w[:, 2] - self.scene.env_origins[:, 2] - self.rest_z
 
+    def _tof_ranges(self):
+        """Ranges along the body down / front / left / right axes (FLU) to the floor and
+        this env's net walls. No return (NaN): down beyond tof_range_max_m, sides beyond
+        side_range, or a random miss."""
+        d, n, dev = self.drone.data, self.num_envs, self.device
+        dirs_b = torch.tensor([[0, 0, -1], [1, 0, 0], [0, 1, 0], [0, -1, 0]], dtype=torch.float32, device=dev)
+        dirs_w = quat_apply(d.root_quat_w.repeat_interleave(4, 0), dirs_b.repeat(n, 1)).view(n, 4, 3)
+        p = (d.root_pos_w - self.scene.env_origins).unsqueeze(1)          # (n, 1, 3)
+        p = p - torch.tensor([0.0, 0.0, self.rest_z], device=dev)         # floor at ToF = 0
+        lo = torch.cat([self.wall_lo, torch.zeros(n, 1, device=dev)], -1).unsqueeze(1)
+        hi = torch.cat([self.wall_hi, torch.full((n, 1), self.cfg.room_height_m, device=dev)], -1).unsqueeze(1)
+        safe = torch.where(dirs_w.abs() < 1e-6, torch.full_like(dirs_w, 1e-6), dirs_w)
+        t = torch.where(dirs_w > 0, (hi - p) / safe, (lo - p) / safe)
+        t = torch.where(dirs_w.abs() < 1e-6, torch.full_like(t, 1e6), t).clamp(min=0.0)
+        r = t.min(dim=-1).values + self.cfg.tof_noise_m * torch.randn(n, 4, device=dev)
+        r = r.clamp(min=0.0)
+        max_r = torch.cat([torch.full((n, 1), self.cfg.tof_range_max_m, device=dev),
+                           self.side_range.unsqueeze(-1).expand(n, 3)], -1)
+        miss = (r > max_r) | (torch.rand(n, 4, device=dev) < self.cfg.tof_invalid_prob)
+        return torch.where(miss, torch.full_like(r, float("nan")), r)
+
     def _raw_sensors(self):
-        """What the DD24 measures, every physics step: down ToF, IMU attitude/gyro/accel."""
+        """What the DD24 measures, every physics step: 4 ToF, IMU attitude/gyro/accel.
+        The IMU is mounted tilted by imu_mis relative to the thrust axis."""
         d, n, dev = self.drone.data, self.num_envs, self.device
         noise = lambda k, sigma: sigma * torch.randn(n, k, device=dev)  # noqa: E731
-        # Range along the body's down axis to the floor.
-        down_w = quat_apply(d.root_quat_w, torch.tensor([0.0, 0.0, -1.0], device=dev).expand(n, 3))
-        cos = (-down_w[:, 2]).clamp(min=0.2)
-        tof = (self._height().clamp(min=0.0) / cos).unsqueeze(-1) + noise(1, self.cfg.tof_noise_m)
-        tof = tof.clamp(0.0, self.cfg.tof_range_max_m)
+        tof = self._tof_ranges()
         dq = torch.cat([torch.ones(n, 1, device=dev), 0.5 * noise(3, self.cfg.att_noise_rad)], dim=-1)
-        quat = quat_mul(d.root_quat_w, dq / dq.norm(dim=-1, keepdim=True))
+        quat = quat_mul(quat_mul(d.root_quat_w, self.imu_mis), dq / dq.norm(dim=-1, keepdim=True))
         frd = torch.tensor([1.0, -1.0, -1.0], device=dev)
-        gyro = d.root_ang_vel_b * frd + noise(3, self.cfg.gyro_noise_rps)
+        gyro = quat_apply_inverse(self.imu_mis, d.root_ang_vel_b) * frd + noise(3, self.cfg.gyro_noise_rps)
         # Specific force (what an accelerometer reads) = body accel minus gravity, in body frame.
         acc_w = d.body_lin_acc_w[:, self.body_id[0]] - torch.tensor(self.cfg.sim.gravity, device=dev)
-        accel = quat_apply_inverse(d.root_quat_w, acc_w) * frd + noise(3, self.cfg.accel_noise_mps2)
+        acc_b = quat_apply_inverse(self.imu_mis, quat_apply_inverse(d.root_quat_w, acc_w))
+        accel = acc_b * frd + noise(3, self.cfg.accel_noise_mps2)
         return torch.cat([tof, quat, gyro, accel], dim=-1)
 
     def _sample_sensors(self):
@@ -335,16 +383,18 @@ class DronePX4Env(DirectRLEnv):
 
         self.timer -= dt
         self.drop_left -= dt
-        start = torch.rand(n, 2, device=dev) < self.drop_rate * dt
+        k = self.n_streams
+        start = torch.rand(n, k, device=dev) < self.drop_rate * dt
         lo, hi = self.cfg.dropout_s
-        self.drop_left = torch.where(start & (self.drop_left <= 0), lo + (hi - lo) * torch.rand(n, 2, device=dev), self.drop_left)
+        self.drop_left = torch.where(start & (self.drop_left <= 0), lo + (hi - lo) * torch.rand(n, k, device=dev), self.drop_left)
         due = self.timer <= 0
         self.timer = torch.where(due, self.timer + self.period, self.timer)
-        publish = due & (self.drop_left <= 0)
 
-        lat_cols = self.lat_steps[:, self.col_stream]                     # (n, 11)
-        idx = ((p - lat_cols) % self.hist_len).unsqueeze(0)               # (1, n, 11)
+        lat_cols = self.lat_steps[:, self.col_stream]                     # (n, 14)
+        idx = ((p - lat_cols) % self.hist_len).unsqueeze(0)               # (1, n, 14)
         delayed = self.hist.gather(0, idx).squeeze(0)
+        valid = ~torch.isnan(delayed[:, self.stream_first_col])           # no ToF return -> nothing published
+        publish = due & (self.drop_left <= 0) & valid
         self.held = torch.where(publish[:, self.col_stream], delayed, self.held)
         self.age = torch.where(publish, self.lat_steps.float() * dt, self.age + dt)
 
@@ -352,15 +402,15 @@ class DronePX4Env(DirectRLEnv):
         k, dev, dt = len(env_ids), self.device, self.physics_dt
         u = lambda r: r[0] + (r[1] - r[0]) * torch.rand(k, device=dev)  # noqa: E731
         self.period[env_ids] = torch.stack([1.0 / u(r) for r in self.stream_rate], -1)
-        self.timer[env_ids] = torch.rand(k, 2, device=dev) * self.period[env_ids]
+        self.timer[env_ids] = torch.rand(k, self.n_streams, device=dev) * self.period[env_ids]
         self.lat_steps[env_ids] = torch.stack([(u(r) / dt).round().long() for r in self.stream_lat], -1)
-        self.drop_rate[env_ids] = u(self.cfg.dropout_per_s).unsqueeze(-1).expand(k, 2)
+        self.drop_rate[env_ids] = torch.stack([u(self.cfg.dropout_per_s) for _ in range(self.n_streams)], -1)
         self.drop_left[env_ids] = 0.0
         self.cmd_delay[env_ids] = (u(self.cfg.cmd_latency_s) / dt).round().long().clamp(max=self.cmd_hist_len - 1)
         self.cmd_hist[:, env_ids] = 0.0
         raw = self._raw_sensors()[env_ids]
         self.hist[:, env_ids] = raw
-        self.held[env_ids] = raw
+        self.held[env_ids] = torch.nan_to_num(raw, nan=self.cfg.side_tof_range_m[1])
         self.age[env_ids] = 0.0
 
     # --- RL interface ------------------------------------------------------------
@@ -381,17 +431,18 @@ class DronePX4Env(DirectRLEnv):
     def _get_rewards(self):
         # Ground truth is fine here: the reward is only used in training.
         # Every term is >= 0 while flying, so staying airborne always beats crashing.
-        # No xy-position term: nothing the policy sees can tell it where it is
-        # sideways, so it is rewarded for not moving sideways instead.
+        # xy: hold the takeoff spot (the side ToFs see the net, so this is observable).
         d = self.drone.data
         z_err = (self._height() - self.target_z).abs()
         h_speed = torch.linalg.norm(d.root_lin_vel_w[:, 0:2], dim=-1)
+        xy_err = torch.linalg.norm(d.root_pos_w[:, 0:2] - self.scene.env_origins[:, 0:2], dim=-1)
         v_err = d.root_lin_vel_w[:, 2].abs()
         spin = torch.linalg.norm(d.root_ang_vel_b, dim=-1)
         r = (
             0.25                                 # alive
             + 1.0 * torch.exp(-5.0 * z_err)
-            + 0.5 * torch.exp(-3.0 * h_speed)
+            + 0.75 * torch.exp(-3.0 * xy_err)
+            + 0.25 * torch.exp(-3.0 * h_speed)
             + 0.25 * torch.exp(-4.0 * self._tilt())
             + 0.25 * torch.exp(-2.0 * v_err)
             + 0.25 * torch.exp(-0.5 * spin)
@@ -405,8 +456,9 @@ class DronePX4Env(DirectRLEnv):
     def _get_dones(self):
         crashed = self._tilt() > self.cfg.max_tilt_rad
         pos = self.drone.data.root_pos_w - self.scene.env_origins
-        wall = self.cfg.room_half_width_m - self.cfg.wall_clearance_m
-        crashed |= (pos[:, 0:2].abs() > wall).any(-1) | (pos[:, 2] > self.cfg.room_height_m - 0.1)
+        c = self.cfg.wall_clearance_m
+        crashed |= ((pos[:, 0:2] < self.wall_lo + c) | (pos[:, 0:2] > self.wall_hi - c)).any(-1)
+        crashed |= pos[:, 2] > self.cfg.room_height_m - 0.1
         timed_out = self.episode_length_buf >= self.max_episode_length - 1
         return crashed, timed_out
 
@@ -440,4 +492,12 @@ class DronePX4Env(DirectRLEnv):
             self.target_goal[env_ids] = 0.0
             s0, s1 = self.cfg.target_start_s
             self.target_timer[env_ids] = s0 + (s1 - s0) * torch.rand(k, device=dev)
+            u = lambda r, *shape: r[0] + (r[1] - r[0]) * torch.rand(k, *shape, device=dev)  # noqa: E731
+            self.wall_lo[env_ids] = -u(self.cfg.wall_dist_range_m, 2)
+            self.wall_hi[env_ids] = u(self.cfg.wall_dist_range_m, 2)
+            self.side_range[env_ids] = u(self.cfg.side_tof_range_m)
+            self.cg_offset[env_ids] = (torch.rand(k, 2, device=dev) * 2 - 1) * self.cfg.cg_offset_m
+            tilt = (torch.rand(k, 2, device=dev) * 2 - 1) * self.cfg.imu_tilt_rad
+            mis = torch.cat([torch.ones(k, 1, device=dev), 0.5 * tilt, torch.zeros(k, 1, device=dev)], -1)
+            self.imu_mis[env_ids] = mis / mis.norm(dim=-1, keepdim=True)
             self._reset_streams(env_ids)

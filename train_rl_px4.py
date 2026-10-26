@@ -15,7 +15,7 @@ from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--num_envs", type=int, default=1024)
-parser.add_argument("--iters", type=int, default=1000)
+parser.add_argument("--iters", type=int, default=600)
 parser.add_argument("--steps", type=int, default=64)
 parser.add_argument("--epochs", type=int, default=5)
 parser.add_argument("--minibatch_size", type=int, default=8192)

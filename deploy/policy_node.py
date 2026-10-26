@@ -5,8 +5,12 @@ Plain script, run inside the container that has rclpy + mavros_msgs:
 
 Inputs (latest message of each, held, with its age = now - header.stamp):
   /mavros/imu/data                           orientation, angular_velocity, linear_acceleration
-  --tof_topic (default right_tof = the one that reads ~0 on the floor in the logs)
-Output, 50 Hz:
+  --down_topic   (default right_tof = the one that reads ~0 on the floor in the logs)
+  --front_topic / --left_topic / --right_topic: the three sideways ToFs. Which topic
+                 faces which way is not known yet: cover each sensor by hand
+                 (props off) and pass the topics here. Readings of 999 (no return)
+                 are ignored, as in training.
+Output, 20 Hz (the policy's training rate):
   /mavros/setpoint_raw/attitude              thrust + body rates (attitude ignored)
 
 The node always streams setpoints (PX4 needs them before it accepts OFFBOARD), but
@@ -35,7 +39,7 @@ from sensor_msgs.msg import Imu, Range
 
 FRD = np.array([1.0, -1.0, -1.0], np.float32)
 AGE_CLIP_S = 1.0
-TOF_MAX_M = 2.0
+RATE_HZ = 20.0
 TARGET_SPEED_MPS = 0.3
 
 
@@ -69,28 +73,31 @@ class PolicyNode(Node):
         self.args = args
         self.policy = Policy(args.policy)
         self.imu = None
-        self.tof = None
+        self.tofs = [None] * 4    # down, front, left, right
         self.armed_offboard = False
         self.t_start = None
         self.target = 0.0
         self.ctbr = np.zeros(4, np.float32)
         self.done = False
         self.create_subscription(Imu, "/mavros/imu/data", self.on_imu, qos_profile_sensor_data)
-        self.create_subscription(Range, args.tof_topic, self.on_tof, qos_profile_sensor_data)
+        topics = [args.down_topic, args.front_topic, args.left_topic, args.right_topic]
+        for i, topic in enumerate(topics):
+            self.create_subscription(Range, topic, lambda m, i=i: self.on_tof(i, m), qos_profile_sensor_data)
         self.create_subscription(State, "/mavros/state", self.on_state, 10)
         self.pub = self.create_publisher(AttitudeTarget, "/mavros/setpoint_raw/attitude", 10)
         self.log = open(args.log, "w") if args.log else None
         if self.log:
             self.log.write("t,active,target,tof,tof_age,imu_age,tilt_deg,thrust,p,q,r\n")
-        self.create_timer(1.0 / 50.0, self.tick)
-        self.get_logger().info(f"policy {args.policy}, ToF {args.tof_topic}, height {args.height} m, hold {args.hold} s")
+        self.create_timer(1.0 / RATE_HZ, self.tick)
+        self.get_logger().info(f"policy {args.policy}, ToF down/front/left/right {topics}, "
+                               f"height {args.height} m, hold {args.hold} s")
 
     def on_imu(self, m):
         self.imu = m
 
-    def on_tof(self, m):
-        if 0.0 <= m.range <= max(m.max_range, TOF_MAX_M) and m.range < 100.0:  # drop 999 = no return
-            self.tof = m
+    def on_tof(self, i, m):
+        if 0.0 <= m.range < 100.0:  # 999 = no return: keep the previous reading, its age grows
+            self.tofs[i] = m
 
     def on_state(self, m):
         active = m.armed and m.mode == "OFFBOARD"
@@ -116,24 +123,24 @@ class PolicyNode(Node):
         a = self.imu.linear_acceleration
         gyro = np.array([w.x, w.y, w.z], np.float32) * FRD
         acc = np.array([a.x, a.y, a.z], np.float32) * FRD
-        tof = min(max(self.tof.range, 0.0), TOF_MAX_M)
-        ages = np.clip([now - stamp_s(self.tof), now - stamp_s(self.imu)], 0.0, AGE_CLIP_S)
-        return np.concatenate([[tof], quat, gyro, acc, ages, self.ctbr, [self.target]]).astype(np.float32), ages
+        tof = [m.range for m in self.tofs]
+        ages = np.clip([now - stamp_s(m) for m in self.tofs] + [now - stamp_s(self.imu)], 0.0, AGE_CLIP_S)
+        return np.concatenate([tof, quat, gyro, acc, ages, self.ctbr, [self.target]]).astype(np.float32), ages
 
     def tick(self):
         now = self.get_clock().now().nanoseconds * 1e-9
         sp = np.zeros(4, np.float32)
         info = (0.0, 0.0, 0.0, 0.0)
-        if self.armed_offboard and not self.done and self.imu is not None and self.tof is not None:
+        if self.armed_offboard and not self.done and self.imu is not None and None not in self.tofs:
             t = time.monotonic() - self.t_start
-            step = TARGET_SPEED_MPS / 50.0
+            step = TARGET_SPEED_MPS / RATE_HZ
             self.target += float(np.clip(self.goal(t) - self.target, -step, step))
             obs, ages = self.obs(now)
             q = self.imu.orientation
             tilt = math.degrees(math.acos(max(-1.0, min(1.0, 1.0 - 2.0 * (q.x * q.x + q.y * q.y)))))
-            info = (obs[0], ages[0], ages[1], tilt)
-            if tilt > 45.0 or ages[1] > 0.5 or ages[0] > 1.0:
-                self.get_logger().error(f"abort: tilt {tilt:.0f} deg, ToF age {ages[0]:.2f} s, IMU age {ages[1]:.2f} s")
+            info = (obs[0], ages[0], ages[4], tilt)
+            if tilt > 45.0 or ages[4] > 0.5 or ages[0] > 1.0:
+                self.get_logger().error(f"abort: tilt {tilt:.0f} deg, down ToF age {ages[0]:.2f} s, IMU age {ages[4]:.2f} s")
                 self.done = True
             elif t > 1.0 + self.args.height / TARGET_SPEED_MPS + self.args.hold and self.target <= 0.0 and obs[0] < 0.05:
                 self.get_logger().info("landed: thrust 0 (disarm from the dashboard)")
@@ -159,7 +166,10 @@ class PolicyNode(Node):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--policy", default="policy.npz")
-    p.add_argument("--tof_topic", default="/noducksgiven/right_tof_driver_node/range")
+    p.add_argument("--down_topic", default="/noducksgiven/right_tof_driver_node/range")
+    p.add_argument("--front_topic", required=True)
+    p.add_argument("--left_topic", required=True)
+    p.add_argument("--right_topic", required=True)
     p.add_argument("--height", type=float, default=0.5)
     p.add_argument("--hold", type=float, default=6.0)
     p.add_argument("--max_thrust", type=float, default=0.65, help="hard cap on the thrust setpoint")
