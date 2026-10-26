@@ -97,7 +97,7 @@ class Hud:
         # Altitude strip chart.
         cx, cy, cw, ch = 10, top, pw - 20, 150
         cv2.rectangle(img, (cx, cy), (cx + cw, cy + ch), (60, 60, 60), 1)
-        z_max = max(1.5 * self.target_z, max(self.z) * 1.1)
+        z_max = max(1.5 * self.target_z, max(self.z) * 1.1, 0.3)
         to_px = lambda tt, zz: (  # noqa: E731
             int(cx + 40 + (cw - 50) * tt / self.seconds),
             int(cy + ch - 20 - (ch - 35) * zz / z_max),

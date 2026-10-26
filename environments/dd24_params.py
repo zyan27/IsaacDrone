@@ -46,7 +46,9 @@ class DD24Params:
     # Get it from a thrust stand or the motor/prop manufacturer chart.
     # Community bench data for 2205 2300KV + 4"/4.5" triblades on 4S: ~700-800 gf
     # per motor at full throttle on a fresh pack (TWR ~3.6 at 827 g).
-    max_thrust_per_motor_N: float = 7.36  # [EST] 0.75 kgf * 9.81, bench data, not this drone
+    # Flight logs 2026-10-25: hover at PX4 thrust setpoint ~0.47 on a 16 V pack, so with
+    # thrust ~ u**2: Fmax = m g / (4 * 0.47**2) = 9.2 N (DronePX4Env randomises 0.42-0.52).
+    max_thrust_per_motor_N: float = 9.18  # [SRC] from logged hover thrust, not a thrust stand
     kv: float = 2300.0                   # [SRC] motor KV
     battery_cells: int = 4               # [SRC] 4S
     battery_nominal_V: float = 14.8      # [SRC]
@@ -62,7 +64,7 @@ class DD24Params:
     motor_time_constant_s: float = 0.02  # [EST]
 
     # Thrust vs ESC command: thrust ~ Fmax * u**2 (prop thrust ~ rpm^2, rpm ~ u).
-    # Predicts hover at u ~0.52; user flight: 0.40 barely lifts, 0.70 climbs.
+    # Logged hover u ~0.47 (climbs at 0.48-0.51, sinks at 0.44-0.45).
     thrust_curve_exponent: float = 2.0   # [EST]
     # Prop reaction torque per newton of thrust (m). Typical 4" props: 0.01-0.02.
     # The reference repo's 1e-5 gave the DD24 almost no yaw authority.

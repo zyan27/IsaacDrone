@@ -1,6 +1,6 @@
 """PPO for the DD24 flown through the PX4 inner loop (DronePX4Env).
 
-Actor: DD24 sensors only (5 ToF, EKF vz/attitude, IMU, last setpoint) -> CTBR setpoint
+Actor: DD24 sensors only (down ToF, IMU, their sample ages, last setpoint, height command) -> CTBR setpoint
        for PX4 (same message the real drone gets via mavros). Deployable.
 Critic: sensors + ground-truth position error and velocity (training only).
 
@@ -15,7 +15,7 @@ from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--num_envs", type=int, default=1024)
-parser.add_argument("--iters", type=int, default=500)
+parser.add_argument("--iters", type=int, default=1000)
 parser.add_argument("--steps", type=int, default=64)
 parser.add_argument("--epochs", type=int, default=5)
 parser.add_argument("--minibatch_size", type=int, default=8192)
@@ -71,7 +71,7 @@ def main():
                 a = dist.sample()
                 logp = dist.log_prob(a).sum(-1)
                 v = critic(s).squeeze(-1)
-            obs, rew, term, trunc, _ = env.step(policy_to_ctbr(a, env.hover_cmd))
+            obs, rew, term, trunc, _ = env.step(policy_to_ctbr(a))
             done = term | trunc
 
             ep_ret += rew
