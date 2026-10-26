@@ -20,6 +20,8 @@ parser.add_argument("--steps", type=int, default=64)
 parser.add_argument("--epochs", type=int, default=5)
 parser.add_argument("--minibatch_size", type=int, default=8192)
 parser.add_argument("--save_path", type=str, default="checkpoints/px4_hover.pt")
+parser.add_argument("--init_checkpoint", type=str, default=None, help="start the actor (and its noise) from this checkpoint; the critic starts fresh")
+parser.add_argument("--critic_warmup", type=int, default=20, help="with --init_checkpoint: iterations that train only the critic")
 
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
@@ -49,6 +51,12 @@ def main():
         actor.net[-1].bias.zero_()
     critic = mlp(state_dim, 1).to(dev)
     log_std = nn.Parameter(torch.full((4,), -1.0, device=dev))
+    if args.init_checkpoint:
+        # Fine-tune: keep the policy, but not the critic (it valued the old reward).
+        init = torch.load(args.init_checkpoint, map_location=dev)
+        actor.load_state_dict(init["actor"])
+        log_std.data.copy_(init["log_std"].to(dev))
+        print(f"actor from {args.init_checkpoint} (iter {init.get('iter')}); critic only for {args.critic_warmup} iters")
     optimizer = optim.Adam(list(actor.parameters()) + list(critic.parameters()) + [log_std], lr=3e-4)
 
     gamma, lam, clip_eps, value_coef, entropy_coef = 0.99, 0.95, 0.2, 0.5, 0.0
@@ -115,6 +123,8 @@ def main():
                 pg = -torch.min(ratio * f_adv[mb], ratio.clamp(1 - clip_eps, 1 + clip_eps) * f_adv[mb]).mean()
                 vl = 0.5 * (critic(f_state[mb]).squeeze(-1) - f_ret[mb]).pow(2).mean()
                 loss = pg + value_coef * vl - entropy_coef * dist.entropy().sum(-1).mean()
+                if args.init_checkpoint and it < args.critic_warmup:
+                    loss = value_coef * vl  # actor (and its noise) frozen until the critic catches up
                 optimizer.zero_grad()
                 loss.backward()
                 nn.utils.clip_grad_norm_(list(actor.parameters()) + list(critic.parameters()) + [log_std], 1.0)
