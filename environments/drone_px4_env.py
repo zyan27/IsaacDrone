@@ -114,7 +114,8 @@ class DronePX4EnvCfg(DirectRLEnvCfg):
     room_height_m = 2.5
     wall_clearance_m = 0.17   # arm 0.115 + prop radius 0.05
     spawn_xy_range_m = 0.0
-    crash_penalty = -10.0
+    crash_penalty = -5.0
+    spawn_air_prob = 0.5      # start this share of episodes hovering at the target (learn hover before takeoff)
 
     # Sensor model (1-sigma). Down ToF: VL53L1X, reads ~0 on the floor, ~1.5 mm
     # noise at rest; the logs show ~1 cm in flight.
@@ -431,6 +432,8 @@ class DronePX4Env(DirectRLEnv):
     def _get_rewards(self):
         # Ground truth is fine here: the reward is only used in training.
         # Every term is >= 0 while flying, so staying airborne always beats crashing.
+        # The stability terms are gated by being at the commanded height: ungated, a
+        # drone sitting on the floor earned 2.25 of 3.0 and the first policy never took off.
         # xy: hold the takeoff spot (the side ToFs see the net, so this is observable).
         d = self.drone.data
         z_err = (self._height() - self.target_z).abs()
@@ -438,15 +441,15 @@ class DronePX4Env(DirectRLEnv):
         xy_err = torch.linalg.norm(d.root_pos_w[:, 0:2] - self.scene.env_origins[:, 0:2], dim=-1)
         v_err = d.root_lin_vel_w[:, 2].abs()
         spin = torch.linalg.norm(d.root_ang_vel_b, dim=-1)
-        r = (
-            0.25                                 # alive
-            + 1.0 * torch.exp(-5.0 * z_err)
-            + 0.75 * torch.exp(-3.0 * xy_err)
+        at_height = torch.exp(-4.0 * z_err)
+        stable = (
+            0.75 * torch.exp(-3.0 * xy_err)
             + 0.25 * torch.exp(-3.0 * h_speed)
             + 0.25 * torch.exp(-4.0 * self._tilt())
             + 0.25 * torch.exp(-2.0 * v_err)
             + 0.25 * torch.exp(-0.5 * spin)
         )
+        r = 0.25 + 1.5 * at_height + at_height * stable   # alive + height + gated stability, max 3.5
         return torch.where(self.reset_terminated, torch.full_like(r, self.cfg.crash_penalty), r)
 
     def _tilt(self):
@@ -471,8 +474,12 @@ class DronePX4Env(DirectRLEnv):
         root_state[:, 0:3] = self.scene.env_origins[env_ids]
         r = self.cfg.spawn_xy_range_m
         root_state[:, 0:2] += (torch.rand(k, 2, device=self.device) * 2 - 1) * r
-        # On the floor (rest_z doesn't exist yet during the first reset in __init__).
-        root_state[:, 2] += getattr(self, "rest_z", 0.15) + 0.002
+        # On the floor (rest_z doesn't exist yet during the first reset in __init__),
+        # or for spawn_air_prob of episodes, hovering at a random target height.
+        air = torch.rand(k, device=self.device) < (self.cfg.spawn_air_prob if hasattr(self, "rest_z") else 0.0)
+        lo, hi = self.cfg.target_z_range_m
+        air_h = torch.where(air, lo + (hi - lo) * torch.rand(k, device=self.device), torch.zeros(k, device=self.device))
+        root_state[:, 2] += getattr(self, "rest_z", 0.15) + 0.002 + air_h
         yaw = (torch.rand(k, device=self.device) * 2 - 1) * math.pi
         root_state[:, 3:7] = torch.stack([torch.cos(yaw / 2), torch.zeros_like(yaw), torch.zeros_like(yaw), torch.sin(yaw / 2)], -1)
         root_state[:, 7:13] = 0.0
@@ -488,10 +495,15 @@ class DronePX4Env(DirectRLEnv):
             h = self.cfg.hover_thrust_range
             hover = h[0] + (h[1] - h[0]) * torch.rand(k, device=dev)
             self.fmax[env_ids] = self.mass[env_ids] * 9.81 / (4 * hover.pow(self.cfg.thrust_curve_exponent))
-            self.target_z[env_ids] = 0.0
-            self.target_goal[env_ids] = 0.0
+            self.target_z[env_ids] = air_h
+            self.target_goal[env_ids] = air_h
             s0, s1 = self.cfg.target_start_s
-            self.target_timer[env_ids] = s0 + (s1 - s0) * torch.rand(k, device=dev)
+            h0, h1 = self.cfg.target_hold_s
+            self.target_timer[env_ids] = torch.where(air, h0 + (h1 - h0) * torch.rand(k, device=dev),
+                                                     s0 + (s1 - s0) * torch.rand(k, device=dev))
+            # Airborne starts: rotors already spinning at hover, last setpoint = hover thrust.
+            self.motor_speed[env_ids] = torch.where(air, hover, torch.zeros_like(hover)).unsqueeze(-1).expand(k, 4)
+            self.ctbr[env_ids, 0] = torch.where(air, hover, torch.zeros_like(hover))
             u = lambda r, *shape: r[0] + (r[1] - r[0]) * torch.rand(k, *shape, device=dev)  # noqa: E731
             self.wall_lo[env_ids] = -u(self.cfg.wall_dist_range_m, 2)
             self.wall_hi[env_ids] = u(self.cfg.wall_dist_range_m, 2)
