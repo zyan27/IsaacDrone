@@ -99,7 +99,7 @@ class DronePX4EnvCfg(DirectRLEnvCfg):
     # hold, then hold a new height. No landing in training: on the real drone the pilot
     # lands by hand, and a target of 0 mid-episode would undo the floor rule below.
     hover_height = 0.5            # play_px4.py scripted default
-    target_z_range_m = (0.3, 1.0)
+    target_z_range_m = (0.3, 0.8)   # below the 1 m ceiling
     target_hold_s = (2.0, 6.0)
     target_start_s = (0.5, 2.0)   # idle on the floor before the first climb
     target_land_prob = 0.0
@@ -121,6 +121,11 @@ class DronePX4EnvCfg(DirectRLEnvCfg):
     spawn_xy_range_m = 0.0
     crash_penalty = -200.0
     floor_penalty = -20.0     # per step on the floor once the command has left it
+    ceiling_m = 1.0           # height (down ToF) above which the episode ends as a crash
+    zone_m = 0.1              # in the zone: within this of the command in height and of the takeoff spot in xy ...
+    zone_bonus = 5.0          # ... earns this per step
+    vel_penalty = 2.0         # per step, x |v|^2 (m/s)
+    acc_penalty = 0.1         # per step, x |a|^2 (m/s^2)
     spawn_air_prob = 0.0      # share of episodes that start hovering at the target (off: always take off from the floor)
 
     # Sensor model (1-sigma). Down ToF: VL53L1X, reads ~0 on the floor, ~1.5 mm
@@ -224,6 +229,7 @@ class DronePX4Env(DirectRLEnv):
         self.target_z = torch.zeros(n, device=dev)
         self.target_goal = torch.zeros(n, device=dev)
         self.target_timer = torch.zeros(n, device=dev)
+        self.prev_vel = torch.zeros(n, 3, device=dev)
 
         self.rest_z = self._measure_rest_height()
         print(f"[DronePX4Env] mass {cfg.mass_kg:.3f} kg, inertia {cfg.inertia_kgm2}, "
@@ -456,6 +462,14 @@ class DronePX4Env(DirectRLEnv):
             + 0.25 * torch.exp(-0.5 * spin)
         )
         r = 0.25 + 1.5 * at_height + at_height * stable   # alive + height + gated stability, max 3.5
+        # On top: a strong bonus in the zone (the green marker, +-0.1 m), and penalties
+        # on speed and acceleration (world frame, gravity-free: from the velocity change).
+        vel = d.root_lin_vel_w
+        acc = (vel - self.prev_vel) / self.step_dt
+        self.prev_vel = vel.clone()
+        in_zone = (z_err < self.cfg.zone_m) & (xy_err < self.cfg.zone_m)
+        r = r + self.cfg.zone_bonus * in_zone.float()
+        r = r - self.cfg.vel_penalty * vel.pow(2).sum(-1) - self.cfg.acc_penalty * acc.pow(2).sum(-1)
         # Before the command leaves the floor: alive only. Paid in full, that wait was worth
         # 3.5/step, so dying at the floor rule and respawning into it paid (job 7977545).
         r = torch.where(self.target_z > 0.0, r, torch.full_like(r, 0.25))
@@ -472,7 +486,7 @@ class DronePX4Env(DirectRLEnv):
         pos = self.drone.data.root_pos_w - self.scene.env_origins
         c = self.cfg.wall_clearance_m
         crashed |= ((pos[:, 0:2] < self.wall_lo + c) | (pos[:, 0:2] > self.wall_hi - c)).any(-1)
-        crashed |= pos[:, 2] > self.cfg.room_height_m - 0.1
+        crashed |= self._height() > self.cfg.ceiling_m
         crashed |= (self.target_z > self.cfg.floor_target_m) & (self._height() < self.cfg.floor_height_m)
         timed_out = self.episode_length_buf >= self.max_episode_length - 1
         return crashed, timed_out
@@ -504,6 +518,7 @@ class DronePX4Env(DirectRLEnv):
             self.ctbr[env_ids] = 0.0
             self.motor_cmd[env_ids] = 0.0
             self.motor_speed[env_ids] = 0.0
+            self.prev_vel[env_ids] = 0.0
             h = self.cfg.hover_thrust_range
             hover = h[0] + (h[1] - h[0]) * torch.rand(k, device=dev)
             self.fmax[env_ids] = self.mass[env_ids] * 9.81 / (4 * hover.pow(self.cfg.thrust_curve_exponent))
