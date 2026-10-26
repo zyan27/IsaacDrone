@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Video of the policy so far, while training keeps running. From the login node:
-#     bash oscar/snapshot.sh                                   # best so far: checkpoints/px4_hold.pt
-#     bash oscar/snapshot.sh checkpoints/px4_hold_latest.pt    # current policy
-#     JOB=7978456 bash oscar/snapshot.sh                       # a specific job
+# Video of the best policy so far, while training keeps running. From the login node:
+#     bash oscar/snapshot.sh                          # checkpoints/px4_hold.pt
+#     bash oscar/snapshot.sh checkpoints/other.pt     # another checkpoint
+#     JOB=7978456 bash oscar/snapshot.sh              # a specific job
+# Training only writes that file when an iteration beats the best episode return so
+# far, so it always holds the highest-reward policy (its iter and return are printed).
 # Runs play_px4.py inside your newest running GPU job (batch or interactive), on the
 # same node and GPU (srun --overlap), so training doesn't stop. Takes ~5-20 min
 # (Isaac start-up shares the job's CPUs) and writes videos/live/<job>_<time>.mp4 (+ .csv).
