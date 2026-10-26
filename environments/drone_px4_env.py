@@ -115,7 +115,7 @@ class DronePX4EnvCfg(DirectRLEnvCfg):
     wall_clearance_m = 0.17   # arm 0.115 + prop radius 0.05
     spawn_xy_range_m = 0.0
     crash_penalty = -5.0
-    spawn_air_prob = 0.5      # start this share of episodes hovering at the target (learn hover before takeoff)
+    spawn_air_prob = 0.0      # share of episodes that start hovering at the target (off: always take off from the floor)
 
     # Sensor model (1-sigma). Down ToF: VL53L1X, reads ~0 on the floor, ~1.5 mm
     # noise at rest; the logs show ~1 cm in flight.
