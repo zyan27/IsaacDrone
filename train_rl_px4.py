@@ -143,6 +143,11 @@ def main():
                         "log_std": log_std.detach().cpu(), "best_ep_return": best, "iter": it}, args.save_path + ".tmp")
             os.replace(args.save_path + ".tmp", args.save_path)  # oscar/snapshot.sh may read it mid-training
             print(f"saved best episode return {best:.1f}")
+        # Also the current policy every iteration, so a run's final weights are never lost.
+        latest = os.path.splitext(args.save_path)[0] + "_latest.pt"
+        torch.save({"actor": actor.state_dict(), "critic": critic.state_dict(),
+                    "log_std": log_std.detach().cpu(), "ep_return": ep_return, "iter": it}, latest + ".tmp")
+        os.replace(latest + ".tmp", latest)
 
     env.close()
 

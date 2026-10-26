@@ -1,23 +1,21 @@
 #!/usr/bin/env bash
-# Video of the best policy so far, while training keeps running.
-# From the login node, while a dd24_px4 training job is running:
-#     bash oscar/snapshot.sh            # newest running dd24_px4 job
-#     bash oscar/snapshot.sh 7977545    # a specific job
-# Runs play_px4.py inside that job's allocation (same node and GPU, srun --overlap),
-# so it needs no new job and doesn't stop training. Takes ~3-4 min and writes
-# videos/live/<job>_<time>.mp4 (+ .csv): take off, climb to 0.5 m, hold.
+# Video of the policy so far, while training keeps running. From the login node:
+#     bash oscar/snapshot.sh                                   # best so far: checkpoints/px4_hold.pt
+#     bash oscar/snapshot.sh checkpoints/px4_hold_latest.pt    # current policy
+#     JOB=7978456 bash oscar/snapshot.sh                       # a specific job
+# Runs play_px4.py inside your newest running GPU job (batch or interactive), on the
+# same node and GPU (srun --overlap), so training doesn't stop. Takes ~5-20 min
+# (Isaac start-up shares the job's CPUs) and writes videos/live/<job>_<time>.mp4 (+ .csv).
 set -euo pipefail
 
 REPO_DIR="${REPO_DIR:-$HOME/IsaacDrone}"
 cd "$REPO_DIR"
-JOB="${1:-$(squeue --me -h -t R -n dd24_px4 -o %i | sort -n | tail -1)}"
-[ -n "$JOB" ] || { echo "no running dd24_px4 job"; exit 1; }
-
-# The checkpoint that job trains (its --save_path), copied so training can keep rewriting it.
-CKPT="$(scontrol write batch_script "$JOB" - | grep -o 'checkpoints/[^ ]*\.pt' | head -1)"
-[ -f "$CKPT" ] || { echo "job $JOB has not saved $CKPT yet"; exit 1; }
+CKPT="${1:-checkpoints/px4_hold.pt}"
+JOB="${JOB:-$(squeue --me -h -t R -p gpu -o %i | sort -n | tail -1)}"
+[ -n "$JOB" ] || { echo "no running GPU job"; exit 1; }
+[ -f "$CKPT" ] || { echo "$CKPT not saved yet"; exit 1; }
 SNAP="checkpoints/snapshot_${JOB}.pt"
-cp "$CKPT" "$SNAP"
+cp "$CKPT" "$SNAP"   # training rewrites $CKPT; play a fixed copy
 OUT="videos/live/${JOB}_$(date +%H%M%S).mp4"
 mkdir -p videos/live
 echo "job $JOB: $CKPT -> $OUT"
