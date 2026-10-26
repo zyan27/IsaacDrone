@@ -102,7 +102,7 @@ def main():
         actor = PX4Actor(cfg.observation_space).to(env.device)
         actor.load_state_dict(ckpt["actor"])
         actor.eval()
-        print(f"policy from {args.checkpoint} (iter {ckpt.get('iter')}, step reward {ckpt.get('best_step_reward')})")
+        print(f"policy from {args.checkpoint} (iter {ckpt.get('iter')}, episode return {ckpt.get('best_ep_return')})")
 
     dt = cfg.sim.dt * cfg.decimation
     steps = int(args.seconds / dt)

@@ -107,7 +107,7 @@ class DronePX4EnvCfg(DirectRLEnvCfg):
     max_tilt_rad = 1.0
     # Sitting on the floor once the command has left it ends the episode (crash penalty):
     # with it rewarded the first two policies never took off.
-    floor_target_m = 0.15         # command height (~0.5 s into the climb) ...
+    floor_target_m = 0.3          # command height (~1 s into the climb) ...
     floor_height_m = 0.05         # ... by which the drone must be this high
 
     # Net enclosure around each drone: each of the 4 walls sits 0.8-2.0 m from the
@@ -119,7 +119,7 @@ class DronePX4EnvCfg(DirectRLEnvCfg):
     room_height_m = 2.5
     wall_clearance_m = 0.17   # arm 0.115 + prop radius 0.05
     spawn_xy_range_m = 0.0
-    crash_penalty = -5.0
+    crash_penalty = -50.0
     spawn_air_prob = 0.0      # share of episodes that start hovering at the target (off: always take off from the floor)
 
     # Sensor model (1-sigma). Down ToF: VL53L1X, reads ~0 on the floor, ~1.5 mm
@@ -455,6 +455,9 @@ class DronePX4Env(DirectRLEnv):
             + 0.25 * torch.exp(-0.5 * spin)
         )
         r = 0.25 + 1.5 * at_height + at_height * stable   # alive + height + gated stability, max 3.5
+        # Before the command leaves the floor: alive only. Paid in full, that wait was worth
+        # 3.5/step, so dying at the floor rule and respawning into it paid (job 7977545).
+        r = torch.where(self.target_z > 0.0, r, torch.full_like(r, 0.25))
         return torch.where(self.reset_terminated, torch.full_like(r, self.cfg.crash_penalty), r)
 
     def _tilt(self):

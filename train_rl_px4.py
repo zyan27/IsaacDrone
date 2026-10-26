@@ -20,8 +20,6 @@ parser.add_argument("--steps", type=int, default=64)
 parser.add_argument("--epochs", type=int, default=5)
 parser.add_argument("--minibatch_size", type=int, default=8192)
 parser.add_argument("--save_path", type=str, default="checkpoints/px4_hover.pt")
-parser.add_argument("--live_dir", type=str, default="videos/live", help="train_live.png / .csv, rewritten while training")
-parser.add_argument("--plot_every", type=int, default=5, help="iterations between live plot (and <save_path>_latest.pt) updates")
 
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
@@ -35,7 +33,6 @@ import torch.optim as optim
 
 from controllers.px4_policy import PX4Actor, mlp
 from environments.drone_px4_env import DronePX4Env, DronePX4EnvCfg, policy_to_ctbr
-from train_monitor import TrainMonitor
 
 
 def main():
@@ -61,7 +58,6 @@ def main():
     ep_ret = torch.zeros(args.num_envs, device=dev)
     ep_len = torch.zeros(args.num_envs, device=dev)
     t_start = time.time()
-    monitor = TrainMonitor(args.live_dir, cfg.sim.dt * cfg.decimation)
 
     for it in range(args.iters):
         buf = {k: [] for k in ("obs", "state", "act", "logp", "rew", "done", "val")}
@@ -77,7 +73,6 @@ def main():
                 v = critic(s).squeeze(-1)
             obs, rew, term, trunc, _ = env.step(policy_to_ctbr(a))
             done = term | trunc
-            monitor.step(env, done)
 
             ep_ret += rew
             ep_len += 1
@@ -134,23 +129,20 @@ def main():
             n_eps = lens.numel()
         else:
             ep_s, n_eps = float("nan"), 0
-        elapsed = time.time() - t_start
-        off_floor, z_err = monitor.end_iter(it, elapsed, step_rew, ep_s, crashes)
-        print(f"iter={it:04d} step_reward={step_rew:.4f} episodes={n_eps} mean_ep_len={ep_s:5.2f}s "
-              f"crashes={crashes} off_floor={off_floor * 100:3.0f}% z_err={z_err:.3f}m "
-              f"std={log_std.exp().mean().item():.3f} elapsed={elapsed:6.0f}s")
+        ep_return = torch.cat(finished_ret).mean().item() if finished_ret else float("nan")
+        print(f"iter={it:04d} step_reward={step_rew:.4f} ep_return={ep_return:7.1f} "
+              f"episodes={n_eps} mean_ep_len={ep_s:5.2f}s "
+              f"crashes={crashes} std={log_std.exp().mean().item():.3f} elapsed={time.time() - t_start:6.0f}s")
 
-        if step_rew > best:
-            best = step_rew
+        # Best = mean return of the episodes that ended this iteration. Not the step reward:
+        # policies that die young sample the start of the episode more and scored best on it.
+        if finished_ret and ep_return > best:
+            best = ep_return
             os.makedirs(os.path.dirname(args.save_path) or ".", exist_ok=True)
             torch.save({"actor": actor.state_dict(), "critic": critic.state_dict(),
-                        "log_std": log_std.detach().cpu(), "best_step_reward": best, "iter": it}, args.save_path)
-            print(f"saved best step_reward {best:.4f}")
-        if it % args.plot_every == 0 or it == args.iters - 1:
-            monitor.draw(f"{os.path.basename(args.save_path)}  iter {it}/{args.iters}  {elapsed / 60:.0f} min")
-            torch.save({"actor": actor.state_dict(), "critic": critic.state_dict(),
-                        "log_std": log_std.detach().cpu(), "iter": it},
-                       os.path.splitext(args.save_path)[0] + "_latest.pt")
+                        "log_std": log_std.detach().cpu(), "best_ep_return": best, "iter": it}, args.save_path + ".tmp")
+            os.replace(args.save_path + ".tmp", args.save_path)  # oscar/snapshot.sh may read it mid-training
+            print(f"saved best episode return {best:.1f}")
 
     env.close()
 
