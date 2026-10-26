@@ -1,7 +1,7 @@
 """Fly the DD24 through the PX4 inner loop and record an MP4 + CSV.
 
 The height command follows the real-drone test (same profile as
-deploy/policy_node.py): sit on the floor, climb straight up to --height, hold,
+deploy/policy_node.py): sit on the floor, climb straight up to --hold_height, hold,
 come straight down, land.
 
 --checkpoint: the trained policy (train_rl_px4.py) is the commander. It sees only
@@ -22,7 +22,7 @@ from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--seconds", type=float, default=15.0)
-parser.add_argument("--height", type=float, default=0.5, help="hold height (down ToF reading), m")
+parser.add_argument("--hold_height", type=float, default=0.5, help="hold height (down ToF reading), m")
 parser.add_argument("--wait", type=float, default=1.0, help="seconds on the floor before climbing")
 parser.add_argument("--hold", type=float, default=6.0, help="seconds at the hold height")
 parser.add_argument("--out", type=str, default="videos/px4_dd24.mp4")
@@ -51,8 +51,8 @@ def height_goal(t: float) -> float:
     """Wait on the floor, climb, hold, land (ramp rate = the env's target_speed_mps)."""
     if t < args.wait:
         return 0.0
-    if t < args.wait + args.height / 0.3 + args.hold:
-        return args.height
+    if t < args.wait + args.hold_height / 0.3 + args.hold:
+        return args.hold_height
     return 0.0
 
 
@@ -121,7 +121,7 @@ def main():
     )
     markers = make_target_markers()
     title = "DD24 RL policy -> PX4 (4 ToF + IMU, 20 Hz)" if actor else "DD24 scripted reference -> PX4"
-    hud = Hud(title, args.height, args.seconds, room_half=cfg.room_half_width_m)
+    hud = Hud(title, args.hold_height, args.seconds, room_half=cfg.room_half_width_m)
     z_int = torch.zeros(env.num_envs, device=env.device)
 
     for step in range(steps):
