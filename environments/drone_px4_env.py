@@ -12,7 +12,7 @@
     Isaac Sim rigid body with DD24 mass / inertia
 
 The task is the real-drone test: start on the floor, climb straight up to a
-commanded height, hold it over the takeoff spot, come straight down, land. The
+commanded height, hold it over the takeoff spot (landing is done by hand). The
 policy sees only what the DD24 reliably gives the Pi (flight logs 2026-10-25,
 data/flight_logs/):
   - the downward ToF (on the drone: /noducksgiven/right_tof_driver_node/range,
@@ -96,14 +96,19 @@ class DronePX4EnvCfg(DirectRLEnvCfg):
     controller = "emulated"  # "sitl" -> dt-px4 over MAVLink (not wired yet)
 
     # Height command (ToF reading to hold): wait on the floor, ramp straight up,
-    # hold, sometimes come back down and land, repeat.
+    # hold, then hold a new height. No landing in training: on the real drone the pilot
+    # lands by hand, and a target of 0 mid-episode would undo the floor rule below.
     hover_height = 0.5            # play_px4.py scripted default
     target_z_range_m = (0.3, 1.0)
     target_hold_s = (2.0, 6.0)
     target_start_s = (0.5, 2.0)   # idle on the floor before the first climb
-    target_land_prob = 0.3
+    target_land_prob = 0.0
     target_speed_mps = 0.3
     max_tilt_rad = 1.0
+    # Sitting on the floor once the command has left it ends the episode (crash penalty):
+    # with it rewarded the first two policies never took off.
+    floor_target_m = 0.15         # command height (~0.5 s into the climb) ...
+    floor_height_m = 0.05         # ... by which the drone must be this high
 
     # Net enclosure around each drone: each of the 4 walls sits 0.8-2.0 m from the
     # takeoff spot, drawn per episode (so the drone starts anywhere in a 1.6-4 m box).
@@ -462,6 +467,7 @@ class DronePX4Env(DirectRLEnv):
         c = self.cfg.wall_clearance_m
         crashed |= ((pos[:, 0:2] < self.wall_lo + c) | (pos[:, 0:2] > self.wall_hi - c)).any(-1)
         crashed |= pos[:, 2] > self.cfg.room_height_m - 0.1
+        crashed |= (self.target_z > self.cfg.floor_target_m) & (self._height() < self.cfg.floor_height_m)
         timed_out = self.episode_length_buf >= self.max_episode_length - 1
         return crashed, timed_out
 

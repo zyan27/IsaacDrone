@@ -1,7 +1,7 @@
 """Run the trained DD24 policy on the Pi: ROS 2 node, numpy only (no torch).
 
 Plain script, run inside the container that has rclpy + mavros_msgs:
-    python3 policy_node.py --policy policy.npz --height 0.5 --hold 6
+    python3 policy_node.py --policy policy.npz --height 0.5 --front_topic ... --left_topic ... --right_topic ...
 
 Inputs (latest message of each, held, with its age = now - header.stamp):
   /mavros/imu/data                           orientation, angular_velocity, linear_acceleration
@@ -14,10 +14,10 @@ Output, 20 Hz (the policy's training rate):
   /mavros/setpoint_raw/attitude              thrust + body rates (attitude ignored)
 
 The node always streams setpoints (PX4 needs them before it accepts OFFBOARD), but
-they are thrust 0 until the drone is armed AND in OFFBOARD. Then it flies the same
-profile as play_px4.py: 1 s on the floor, climb at 0.3 m/s to --height, hold
---hold s, come down, and send thrust 0 once it reads the floor again.
-To take over at any time: switch the dashboard back to STABILIZED (or disarm).
+they are thrust 0 until the drone is armed AND in OFFBOARD. Then it waits 1 s on
+the floor, climbs at 0.3 m/s to --height and holds it until you take over.
+Landing is not trained: switch the dashboard back to STABILIZED and land by hand
+(or disarm).
 
 It also cuts to thrust 0 (drone drops) if tilt > 45 deg, IMU older than 0.5 s,
 or ToF older than 1 s. From <1 m in the net that is the safe failure.
@@ -90,7 +90,7 @@ class PolicyNode(Node):
             self.log.write("t,active,target,tof,tof_age,imu_age,tilt_deg,thrust,p,q,r\n")
         self.create_timer(1.0 / RATE_HZ, self.tick)
         self.get_logger().info(f"policy {args.policy}, ToF down/front/left/right {topics}, "
-                               f"height {args.height} m, hold {args.hold} s")
+                               f"height {args.height} m (land by hand)")
 
     def on_imu(self, m):
         self.imu = m
@@ -112,9 +112,7 @@ class PolicyNode(Node):
         a = self.args
         if t < 1.0:
             return 0.0
-        if t < 1.0 + a.height / TARGET_SPEED_MPS + a.hold:
-            return a.height
-        return 0.0
+        return a.height
 
     def obs(self, now):
         q = self.imu.orientation
@@ -142,9 +140,6 @@ class PolicyNode(Node):
             if tilt > 45.0 or ages[4] > 0.5 or ages[0] > 1.0:
                 self.get_logger().error(f"abort: tilt {tilt:.0f} deg, down ToF age {ages[0]:.2f} s, IMU age {ages[4]:.2f} s")
                 self.done = True
-            elif t > 1.0 + self.args.height / TARGET_SPEED_MPS + self.args.hold and self.target <= 0.0 and obs[0] < 0.05:
-                self.get_logger().info("landed: thrust 0 (disarm from the dashboard)")
-                self.done = True
             else:
                 sp = self.policy(obs)
                 sp[0] = min(max(sp[0], 0.0), self.args.max_thrust)
@@ -171,7 +166,6 @@ def main():
     p.add_argument("--left_topic", required=True)
     p.add_argument("--right_topic", required=True)
     p.add_argument("--height", type=float, default=0.5)
-    p.add_argument("--hold", type=float, default=6.0)
     p.add_argument("--max_thrust", type=float, default=0.65, help="hard cap on the thrust setpoint")
     p.add_argument("--log", default="policy_log.csv")
     args = p.parse_args()
