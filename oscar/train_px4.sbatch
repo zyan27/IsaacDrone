@@ -19,17 +19,19 @@ set -euo pipefail
 REPO_DIR="${REPO_DIR:-$HOME/IsaacDrone}"
 NUM_ENVS="${NUM_ENVS:-1024}"
 ITERS="${ITERS:-600}"
+REWARD="${REWARD:-hover}"
 cd "$REPO_DIR"
 mkdir -p oscar/logs checkpoints videos
 NAME="${NAME:-px4_hold}"
 source oscar/run_record.sh
+echo "reward $REWARD" >> "$RUN_DIR/git.txt"
 
 echo "== 1/4 scripted check $(date)"
 bash oscar/run_isaac.sh play_px4.py --headless --enable_cameras --seconds 12 --hold 20 --out videos/px4_scripted_hold.mp4
 
 echo "== 2/4 train $(date)"
 bash oscar/run_isaac.sh train_rl_px4.py --headless --num_envs "$NUM_ENVS" --iters "$ITERS" --steps 32 \
-    --save_path checkpoints/px4_hold.pt
+    --reward "$REWARD" --save_path checkpoints/px4_hold.pt
 
 echo "== 3/4 policy video $(date)"
 bash oscar/run_isaac.sh play_px4.py --headless --enable_cameras --seconds 15 --hold 20 \
