@@ -28,6 +28,8 @@ parser.add_argument("--hold", type=float, default=6.0, help="seconds at the hold
 parser.add_argument("--out", type=str, default="videos/px4_dd24.mp4")
 parser.add_argument("--deterministic", action="store_true", help="no randomisation (bitwise_improvement/deterministic.py)")
 parser.add_argument("--obs_history", type=int, default=0, help="past steps of ToF readings in the policy observation (must match training)")
+parser.add_argument("--obs_estimator", action="store_true", help="add the ToF+IMU filter estimates to the policy observation (must match training)")
+parser.add_argument("--obs_oracle", action="store_true", help="add true position error + velocity to the policy observation (sim only)")
 parser.add_argument("--action", choices=["rates", "attitude"], default="rates", help="must match training")
 parser.add_argument("--checkpoint", type=str, default=None, help="train_rl_px4.py checkpoint")
 
@@ -43,7 +45,7 @@ import torch
 from isaaclab.utils.math import euler_xyz_from_quat, wrap_to_pi
 
 from controllers.px4_policy import PX4Actor
-from environments.drone_px4_env import POLICY_HOVER_THRUST, DronePX4Env, DronePX4EnvCfg, policy_to_ctbr, set_obs_history
+from environments.drone_px4_env import POLICY_HOVER_THRUST, DronePX4Env, DronePX4EnvCfg, policy_to_ctbr, set_policy_obs
 from sim_px4.px4_defaults import ATT
 from visualization import Hud, make_target_markers, show_targets
 
@@ -95,7 +97,7 @@ def main():
     cfg.wall_dist_range_m = (cfg.room_half_width_m, cfg.room_half_width_m)  # match the drawn walls
     cfg.spawn_air_prob = 0.0  # always take off from the floor, as on the real drone
     cfg.action_mode = args.action
-    set_obs_history(cfg, args.obs_history)
+    set_policy_obs(cfg, args.obs_history, args.obs_estimator, args.obs_oracle)
     if args.deterministic:
         from bitwise_improvement.deterministic import make_deterministic
         make_deterministic(cfg)

@@ -72,10 +72,11 @@ def policy_to_ctbr(a: torch.Tensor, hover_cmd: float = POLICY_HOVER_THRUST) -> t
     return torch.cat([thrust, rates], dim=-1)
 
 
-def set_obs_history(cfg, k: int):
-    """Policy observation += the 4 ToF readings of the last k steps (DronePX4EnvCfg.obs_history)."""
-    cfg.observation_space = cfg.observation_space - 4 * cfg.obs_history + 4 * k
-    cfg.obs_history = k
+def set_policy_obs(cfg, history: int = 0, estimator: bool = False, oracle: bool = False):
+    """Extra policy inputs (DronePX4EnvCfg.obs_history / obs_estimator / obs_oracle) and the
+    observation size that goes with them: 24 + 4 history + 8 estimator + 6 oracle."""
+    cfg.obs_history, cfg.obs_estimator, cfg.obs_oracle = history, estimator, oracle
+    cfg.observation_space = 24 + 4 * history + 8 * int(estimator) + 6 * int(oracle)
     return cfg
 
 
@@ -189,9 +190,18 @@ class DronePX4EnvCfg(DirectRLEnvCfg):
     action_mode = "rates"
     # obs_history k > 0: the policy also sees the 4 held ToF readings of each of the last k
     # policy steps (k x 0.05 s), so it can tell rising from falling and drifting from still.
-    # Only the ToFs: the rest of the observation does not change with velocity. Set it with
-    # set_obs_history (observation_space grows by 4 k).
+    # Only the ToFs: the rest of the observation does not change with velocity.
+    # obs_estimator: + an alpha-beta filter per ToF (distance and its rate), predicted with the
+    #   IMU's acceleration along that ToF's axis and corrected with its reading every step;
+    #   runs on held sensor values only, so the Pi can run the same filter.
+    # obs_oracle: + ground-truth position error and world velocity (sim only: tests whether
+    #   the missing state estimate is the whole problem).
+    # Set them with set_policy_obs, which sizes observation_space.
     obs_history = 0
+    obs_estimator = False
+    obs_oracle = False
+    est_alpha = 0.5
+    est_beta = 0.15
     att_tilt_max_rad = 0.35
     stream_phase_random = True    # off: every stream's first sample lands at t = 0
     cmd_latency_s = (0.010, 0.080)  # Pi -> mavros -> PX4 setpoint delay + timer jitter
@@ -278,6 +288,8 @@ class DronePX4Env(DirectRLEnv):
         self.target_timer = torch.zeros(n, device=dev)
         self.prev_vel = torch.zeros(n, 3, device=dev)
         self.tof_hist = torch.zeros(n, cfg.obs_history, 4, device=dev)   # [:, 0] = previous step
+        self.est_d = torch.zeros(n, 4, device=dev)   # estimator: ToF distances (down, front, left, right)
+        self.est_v = torch.zeros(n, 4, device=dev)   # and their rates, m/s
         self.lifted = torch.zeros(n, dtype=torch.bool, device=dev)   # field reward: episode flags
         self.reached = torch.zeros(n, dtype=torch.bool, device=dev)
         self.dipped = torch.zeros(n, dtype=torch.bool, device=dev)
@@ -505,7 +517,30 @@ class DronePX4Env(DirectRLEnv):
             self.tof_hist[fresh] = tof[fresh].unsqueeze(1)
             policy = torch.cat([sensors, self.tof_hist.flatten(1)], dim=-1)
             self.tof_hist = torch.cat([tof.unsqueeze(1), self.tof_hist[:, :-1]], dim=1)
+        if self.cfg.obs_estimator:
+            policy = torch.cat([policy, self._estimate(sensors)], dim=-1)
+        if self.cfg.obs_oracle:
+            policy = torch.cat([policy, pos_err, d.root_lin_vel_w], dim=-1)
         return {"policy": policy, "critic": critic}
+
+    def _estimate(self, sensors):
+        """Alpha-beta filter per ToF on held sensor values (what the Pi has): predict distance and
+        rate with the IMU acceleration along the ToF's axis, correct with the latest reading
+        (skipped while that stream is older than 0.2 s). Returns [distances (4), rates (4)]."""
+        c, dt = self.cfg, self.step_dt
+        tof, quat, accel, age = sensors[:, 0:4], sensors[:, 4:8], sensors[:, 11:14], sensors[:, 14:18]
+        f_w = quat_apply(quat, accel * torch.tensor([1.0, -1.0, -1.0], device=self.device))   # FRD -> FLU -> world
+        a_w = f_w + torch.tensor(c.sim.gravity, device=self.device)
+        a_b = quat_apply_inverse(quat, a_w)
+        # d'' along each ray: down grows with height; front / left shrink moving +x / +y; right grows.
+        a = torch.stack([a_w[:, 2], -a_b[:, 0], -a_b[:, 1], a_b[:, 1]], -1)
+        fresh = self.episode_length_buf == 0
+        self.est_d = torch.where(fresh.unsqueeze(-1), tof, self.est_d + self.est_v * dt + 0.5 * a * dt * dt)
+        self.est_v = torch.where(fresh.unsqueeze(-1), torch.zeros_like(tof), self.est_v + a * dt)
+        r = torch.where(age < 0.2, tof - self.est_d, torch.zeros_like(tof))
+        self.est_d = self.est_d + c.est_alpha * r
+        self.est_v = self.est_v + c.est_beta / dt * r
+        return torch.cat([self.est_d, self.est_v], dim=-1)
 
     def _get_rewards(self):
         # Ground truth is fine here: the reward is only used in training.
