@@ -153,6 +153,7 @@ class DronePX4EnvCfg(DirectRLEnvCfg):
     #   field_land_penalty, less an earlier dip's penalty (so dip + land costs the same as land).
     reward_mode = "hover"
     field_box_m = 0.1
+    field_box_pow = 1.0       # box = (1+N)^-pow: 0.5 pulls harder from far away (0.5 m off: 1.07 -> ~1.3)
     field_wall_scale_m = 0.1
     field_k_v = 0.5           # (m/s)^-2
     field_k_a = 0.01          # (m/s^2)^-2
@@ -204,9 +205,13 @@ class DronePX4EnvCfg(DirectRLEnvCfg):
     # ground truth (heading 0 and the fixed box assumed: x from the front wall, y from left /
     # right), so an estimate run differs from an oracle run only in those 6 numbers.
     oracle_source = "true"
+    # "wallmap": same 6 slots from a filter that projects each ToF ray with the full IMU
+    # attitude (heading included) onto the known box walls, drops rays that would hit the
+    # floor first, and fuses the result with the world-frame IMU acceleration.
     est_alpha = 0.5
     est_beta = 0.15
     att_tilt_max_rad = 0.35
+    att_yaw_hold = False      # attitude mode: hold heading 0 with PX4's yaw P loop; the policy's yaw output is ignored
     stream_phase_random = True    # off: every stream's first sample lands at t = 0
     cmd_latency_s = (0.010, 0.080)  # Pi -> mavros -> PX4 setpoint delay + timer jitter
 
@@ -294,6 +299,8 @@ class DronePX4Env(DirectRLEnv):
         self.tof_hist = torch.zeros(n, cfg.obs_history, 4, device=dev)   # [:, 0] = previous step
         self.est_d = torch.zeros(n, 4, device=dev)   # estimator: ToF distances (down, front, left, right)
         self.est_v = torch.zeros(n, 4, device=dev)   # and their rates, m/s
+        self.wm_p = torch.zeros(n, 3, device=dev)    # wall-map estimate: x, y, height
+        self.wm_v = torch.zeros(n, 3, device=dev)
         self.oracle_gap = torch.zeros(6, device=dev)  # sum over steps of mean |estimate - truth|
         self.oracle_gap_n = 0
         self.lifted = torch.zeros(n, dtype=torch.bool, device=dev)   # field reward: episode flags
@@ -530,11 +537,53 @@ class DronePX4Env(DirectRLEnv):
             if self.cfg.oracle_source == "true":
                 policy = torch.cat([policy, truth], dim=-1)
             else:
-                est = self._estimate_state(sensors)
+                est = self._estimate_state(sensors) if self.cfg.oracle_source == "estimate" else self._estimate_wallmap(sensors)
                 self.oracle_gap += (est - truth).abs().mean(0)   # train_rl_px4.py logs and resets it
                 self.oracle_gap_n += 1
                 policy = torch.cat([policy, est], dim=-1)
         return {"policy": policy, "critic": critic}
+
+    def _estimate_wallmap(self, sensors):
+        """Oracle-shaped estimate from a box wall map (walls at +-room_half_width_m, floor at 0):
+        each ToF ray, rotated by the IMU attitude, is matched to the surface it should hit from
+        the current estimate; wall hits measure x or y, floor hits are dropped (the down ray
+        measures height). Alpha-beta fused with world-frame IMU acceleration."""
+        c, dt, dev = self.cfg, self.step_dt, self.device
+        tof, quat, accel, age = sensors[:, 0:4], sensors[:, 4:8], sensors[:, 11:14], sensors[:, 14:18]
+        n, w = tof.shape[0], c.room_half_width_m
+        a_w = quat_apply(quat, accel * torch.tensor([1.0, -1.0, -1.0], device=dev)) + torch.tensor(c.sim.gravity, device=dev)
+        fresh = (self.episode_length_buf == 0).unsqueeze(-1)
+        p = torch.where(fresh, torch.zeros_like(self.wm_p), self.wm_p + self.wm_v * dt + 0.5 * a_w * dt * dt)
+        v = torch.where(fresh, torch.zeros_like(self.wm_v), self.wm_v + a_w * dt)
+        dirs_b = torch.tensor([[0, 0, -1], [1, 0, 0], [0, 1, 0], [0, -1, 0]], dtype=torch.float32, device=dev)
+        dirs = quat_apply(quat.repeat_interleave(4, 0), dirs_b.repeat(n, 1)).view(n, 4, 3)
+        ok = age < 0.2
+        meas = torch.full((n, 3), float("nan"), device=dev)
+        # Height from the down ray, tilt-corrected.
+        dz = -dirs[:, 0, 2]
+        meas[:, 2] = torch.where(ok[:, 0] & (dz > 0.5), tof[:, 0] * dz, meas[:, 2])
+        # Side rays: distance to each surface along the ray from the current estimate.
+        sx, sy = [], []
+        for i in (1, 2, 3):
+            d = dirs[:, i]
+            big = torch.full((n,), 1e6, device=dev)
+            tx = torch.where(d[:, 0].abs() > 1e-3, (torch.sign(d[:, 0]) * w - p[:, 0]) / d[:, 0], big)
+            ty = torch.where(d[:, 1].abs() > 1e-3, (torch.sign(d[:, 1]) * w - p[:, 1]) / d[:, 1], big)
+            tf = torch.where(d[:, 2] < -1e-3, -p[:, 2].clamp(min=0.0) / d[:, 2], big)
+            hit_x = ok[:, i] & (tx <= ty) & (tx < tf)
+            hit_y = ok[:, i] & (ty < tx) & (ty < tf)
+            sx.append(torch.where(hit_x, torch.sign(d[:, 0]) * w - tof[:, i] * d[:, 0], torch.full_like(big, float("nan"))))
+            sy.append(torch.where(hit_y, torch.sign(d[:, 1]) * w - tof[:, i] * d[:, 1], torch.full_like(big, float("nan"))))
+        meas[:, 0] = torch.stack(sx, -1).nanmean(-1)
+        meas[:, 1] = torch.stack(sy, -1).nanmean(-1)
+        have = ~torch.isnan(meas)
+        r = torch.where(have, meas - p, torch.zeros_like(p))
+        alpha = torch.where(fresh, torch.ones_like(p), torch.full_like(p, c.est_alpha))
+        beta = torch.where(fresh, torch.zeros_like(p), torch.full_like(p, c.est_beta))
+        self.wm_p = p + alpha * r
+        self.wm_v = v + beta / dt * r
+        pos_err = torch.stack([-self.wm_p[:, 0], -self.wm_p[:, 1], self.target_z - self.wm_p[:, 2]], -1)
+        return torch.cat([pos_err, self.wm_v], dim=-1)
 
     def _estimate_state(self, sensors):
         """Oracle-shaped estimate from the ToF filter: [pos error x, y, z, world velocity x, y, z].
@@ -612,7 +661,7 @@ class DronePX4Env(DirectRLEnv):
         pos = self.drone.data.root_pos_w - self.scene.env_origins
         h = self._height()
         u = torch.stack([pos[:, 0], pos[:, 1], h - self.target_z], -1) / c.field_box_m
-        box = 1.0 / (1.0 + u.pow(8).sum(-1).pow(0.25))
+        box = (1.0 + u.pow(8).sum(-1).pow(0.25)).pow(-c.field_box_pow)
         lim = c.room_half_width_m - c.wall_clearance_m   # where a wall crash ends the episode
         d = torch.stack([lim - pos[:, 0], lim + pos[:, 0], lim - pos[:, 1], lim + pos[:, 1], h, c.ceiling_m - h], -1)
         walls = (1.0 - torch.exp(-d.clamp(min=0.0) / c.field_wall_scale_m)).prod(-1)
@@ -638,15 +687,17 @@ class DronePX4Env(DirectRLEnv):
         w, x, y, z = q.unbind(-1)
         half = lambda a: (torch.cos(a / 2), torch.sin(a / 2))  # noqa: E731
         zero = torch.zeros_like(w)
-        cz, sz = half(torch.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z)))
+        yaw_sp = torch.zeros_like(w) if self.cfg.att_yaw_hold else torch.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
+        cz, sz = half(yaw_sp)
         cy, sy = half(-sp[:, 1])   # FRD pitch about +y right = FLU pitch about -y
         cx, sx = half(sp[:, 0])
         q_sp = quat_mul(quat_mul(torch.stack([cz, zero, zero, sz], -1), torch.stack([cy, zero, sy, zero], -1)),
                         torch.stack([cx, sx, zero, zero], -1))
         q_err = quat_mul(q * torch.tensor([1.0, -1.0, -1.0, -1.0], device=q.device), q_sp)   # body frame
-        rot = 2.0 * torch.sign(q_err[:, 0:1]) * q_err[:, 1:3]                              # FLU x, y
-        p = torch.tensor(ATT.P[0:2], device=q.device)
-        rates = torch.stack([p[0] * rot[:, 0], -p[1] * rot[:, 1], sp[:, 2]], -1)            # -> FRD
+        rot = 2.0 * torch.sign(q_err[:, 0:1]) * q_err[:, 1:4]                              # FLU x, y, z
+        p = torch.tensor(ATT.P, device=q.device)
+        yaw_rate = -p[2] * rot[:, 2] if self.cfg.att_yaw_hold else sp[:, 2]
+        rates = torch.stack([p[0] * rot[:, 0], -p[1] * rot[:, 1], yaw_rate], -1)           # -> FRD
         return torch.clamp(rates, -self.rate_max, self.rate_max)
 
     def _tilt(self):

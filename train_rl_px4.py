@@ -26,8 +26,10 @@ parser.add_argument("--deterministic", action="store_true", help="no randomisati
 parser.add_argument("--obs_history", type=int, default=0, help="past steps of ToF readings in the policy observation (must match training)")
 parser.add_argument("--obs_estimator", action="store_true", help="add the ToF+IMU filter estimates to the policy observation (must match training)")
 parser.add_argument("--obs_oracle", action="store_true", help="add true position error + velocity to the policy observation (sim only)")
-parser.add_argument("--oracle_source", choices=["true", "estimate"], default="true", help="with --obs_oracle: ground truth, or the same 6 numbers from the ToF+IMU estimator")
+parser.add_argument("--oracle_source", choices=["true", "estimate", "wallmap"], default="true", help="with --obs_oracle: ground truth, or the same 6 numbers from the ToF+IMU estimator / the wall-map estimator")
 parser.add_argument("--seed", type=int, default=0, help="seeds torch, the env and the network init, so runs differ only in what you change")
+parser.add_argument("--yaw_hold", action="store_true", help="attitude mode: PX4 holds heading 0 (must match training)")
+parser.add_argument("--box_pow", type=float, default=1.0, help="field reward: box term (1+N)^-box_pow")
 parser.add_argument("--action", choices=["rates", "attitude"], default="rates", help="attitude: roll/pitch outputs are attitude setpoints")
 parser.add_argument("--thrust_bias", type=float, default=0.0, help="initial actor bias on the thrust output (0.1 ~ 5%% above hover: the first policies climb)")
 parser.add_argument("--critic_warmup", type=int, default=20, help="with --init_checkpoint: iterations that train only the critic")
@@ -51,6 +53,8 @@ def main():
     cfg.scene.num_envs = args.num_envs
     cfg.reward_mode = args.reward
     cfg.action_mode = args.action
+    cfg.att_yaw_hold = args.yaw_hold
+    cfg.field_box_pow = args.box_pow
     set_policy_obs(cfg, args.obs_history, args.obs_estimator, args.obs_oracle, args.oracle_source)
     cfg.seed = args.seed
     torch.manual_seed(args.seed)
