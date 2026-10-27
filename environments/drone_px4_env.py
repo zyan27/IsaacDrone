@@ -110,15 +110,15 @@ class DronePX4EnvCfg(DirectRLEnvCfg):
     floor_target_m = 0.3          # command height (~1 s into the climb) ...
     floor_height_m = 0.05         # ... by which the drone must be this high
 
-    # Net enclosure around each drone: each of the 4 walls sits 0.8-2.0 m from the
-    # takeoff spot, drawn per episode (so the drone starts anywhere in a 1.6-4 m box).
-    # The side ToFs range off it; touching it ends the episode. Visual walls (videos)
-    # are drawn at room_half_width_m, so playback fixes the range to that.
-    room_half_width_m = 1.5
-    wall_dist_range_m = (0.8, 2.0)
+    # Net enclosure: a fixed 2 m x 2 m box (walls 1 m from its centre) for every episode,
+    # so the side ToFs tell the policy where it is. The drone starts anywhere within
+    # +-0.5 m of the centre and must fly to and hold the centre (the green marker).
+    # Random wall distances come back once this works (wall_dist_range_m).
+    room_half_width_m = 1.0
+    wall_dist_range_m = (1.0, 1.0)
     room_height_m = 2.5
     wall_clearance_m = 0.17   # arm 0.115 + prop radius 0.05
-    spawn_xy_range_m = 0.0
+    spawn_xy_range_m = 0.5
     crash_penalty = -200.0
     floor_penalty = -20.0     # per step on the floor once the command has left it
     ceiling_m = 1.0           # height (down ToF) above which the episode ends as a crash

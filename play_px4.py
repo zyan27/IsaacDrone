@@ -92,7 +92,7 @@ def main():
     cfg.wall_dist_range_m = (cfg.room_half_width_m, cfg.room_half_width_m)  # match the drawn walls
     cfg.spawn_air_prob = 0.0  # always take off from the floor, as on the real drone
     # Camera in a corner of the enclosure, looking across it at the target.
-    cfg.viewer.eye = (1.1, 1.1, 1.0)
+    cfg.viewer.eye = (0.9, 0.9, 1.0)
     cfg.viewer.lookat = (0.0, 0.0, 0.35)
     env = DronePX4Env(cfg=cfg, render_mode="rgb_array")
 
