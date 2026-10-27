@@ -23,6 +23,7 @@ parser.add_argument("--save_path", type=str, default="checkpoints/px4_hover.pt")
 parser.add_argument("--init_checkpoint", type=str, default=None, help="start the actor (and its noise) from this checkpoint; the critic starts fresh")
 parser.add_argument("--reward", choices=["hover", "field"], default="hover", help="field: the smooth 3D field reward (see DronePX4EnvCfg)")
 parser.add_argument("--deterministic", action="store_true", help="no randomisation (bitwise_improvement/deterministic.py)")
+parser.add_argument("--obs_history", type=int, default=0, help="past steps of ToF readings in the policy observation (must match training)")
 parser.add_argument("--action", choices=["rates", "attitude"], default="rates", help="attitude: roll/pitch outputs are attitude setpoints")
 parser.add_argument("--thrust_bias", type=float, default=0.0, help="initial actor bias on the thrust output (0.1 ~ 5%% above hover: the first policies climb)")
 parser.add_argument("--critic_warmup", type=int, default=20, help="with --init_checkpoint: iterations that train only the critic")
@@ -38,7 +39,7 @@ import torch.nn as nn
 import torch.optim as optim
 
 from controllers.px4_policy import PX4Actor, mlp
-from environments.drone_px4_env import DronePX4Env, DronePX4EnvCfg, policy_to_ctbr
+from environments.drone_px4_env import DronePX4Env, DronePX4EnvCfg, policy_to_ctbr, set_obs_history
 
 
 def main():
@@ -46,6 +47,7 @@ def main():
     cfg.scene.num_envs = args.num_envs
     cfg.reward_mode = args.reward
     cfg.action_mode = args.action
+    set_obs_history(cfg, args.obs_history)
     if args.deterministic:
         from bitwise_improvement.deterministic import make_deterministic
         make_deterministic(cfg)

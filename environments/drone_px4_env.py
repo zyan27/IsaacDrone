@@ -72,6 +72,13 @@ def policy_to_ctbr(a: torch.Tensor, hover_cmd: float = POLICY_HOVER_THRUST) -> t
     return torch.cat([thrust, rates], dim=-1)
 
 
+def set_obs_history(cfg, k: int):
+    """Policy observation += the 4 ToF readings of the last k steps (DronePX4EnvCfg.obs_history)."""
+    cfg.observation_space = cfg.observation_space - 4 * cfg.obs_history + 4 * k
+    cfg.obs_history = k
+    return cfg
+
+
 @configclass
 class DronePX4EnvCfg(DirectRLEnvCfg):
     episode_length_s = 20.0
@@ -180,6 +187,11 @@ class DronePX4EnvCfg(DirectRLEnvCfg):
     # P loop (MC_ROLL_P / MC_PITCH_P); yaw stays a rate. As /mavros/setpoint_raw/attitude with
     # a quaternion + thrust and the roll / pitch rates ignored. "rates": CTBR (ACRO-like).
     action_mode = "rates"
+    # obs_history k > 0: the policy also sees the 4 held ToF readings of each of the last k
+    # policy steps (k x 0.05 s), so it can tell rising from falling and drifting from still.
+    # Only the ToFs: the rest of the observation does not change with velocity. Set it with
+    # set_obs_history (observation_space grows by 4 k).
+    obs_history = 0
     att_tilt_max_rad = 0.35
     stream_phase_random = True    # off: every stream's first sample lands at t = 0
     cmd_latency_s = (0.010, 0.080)  # Pi -> mavros -> PX4 setpoint delay + timer jitter
@@ -265,6 +277,7 @@ class DronePX4Env(DirectRLEnv):
         self.target_goal = torch.zeros(n, device=dev)
         self.target_timer = torch.zeros(n, device=dev)
         self.prev_vel = torch.zeros(n, 3, device=dev)
+        self.tof_hist = torch.zeros(n, cfg.obs_history, 4, device=dev)   # [:, 0] = previous step
         self.lifted = torch.zeros(n, dtype=torch.bool, device=dev)   # field reward: episode flags
         self.reached = torch.zeros(n, dtype=torch.bool, device=dev)
         self.dipped = torch.zeros(n, dtype=torch.bool, device=dev)
@@ -485,7 +498,14 @@ class DronePX4Env(DirectRLEnv):
         pos_err[:, 0:2] = -(d.root_pos_w[:, 0:2] - self.scene.env_origins[:, 0:2])
         pos_err[:, 2] = self.target_z - self._height()
         critic = torch.cat([sensors, pos_err, d.root_lin_vel_w], dim=-1)
-        return {"policy": sensors, "critic": critic}
+        policy = sensors
+        if self.cfg.obs_history:
+            tof = sensors[:, 0:4]
+            fresh = self.episode_length_buf == 0   # new episode: no motion yet, not the last episode's
+            self.tof_hist[fresh] = tof[fresh].unsqueeze(1)
+            policy = torch.cat([sensors, self.tof_hist.flatten(1)], dim=-1)
+            self.tof_hist = torch.cat([tof.unsqueeze(1), self.tof_hist[:, :-1]], dim=1)
+        return {"policy": policy, "critic": critic}
 
     def _get_rewards(self):
         # Ground truth is fine here: the reward is only used in training.

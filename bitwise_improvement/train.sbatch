@@ -14,7 +14,7 @@
 # attitude loop keeps it level, as in STABILIZED), and the first policies climb (thrust bias).
 # Everything it writes stays in bitwise_improvement/ (checkpoints, videos, logs, runs/<name>_<job>/).
 #     sbatch bitwise_improvement/train.sbatch      (from ~/IsaacDrone)
-#     NAME=... ACTION=rates|attitude THRUST_BIAS=0.2 sbatch bitwise_improvement/train.sbatch
+#     NAME=... ACTION=rates|attitude THRUST_BIAS=0.2 OBS_HISTORY=4 sbatch bitwise_improvement/train.sbatch
 set -euo pipefail
 
 REPO_DIR="${REPO_DIR:-$HOME/IsaacDrone}"
@@ -23,18 +23,19 @@ ITERS="${ITERS:-600}"
 NAME="${NAME:-bitwise}"
 ACTION="${ACTION:-attitude}"
 THRUST_BIAS="${THRUST_BIAS:-0.1}"
+OBS_HISTORY="${OBS_HISTORY:-0}"
 B=bitwise_improvement
 cd "$REPO_DIR"
 mkdir -p $B/logs $B/checkpoints $B/videos
 RUNS_ROOT=$B/runs source oscar/run_record.sh
-echo "reward field, deterministic, action $ACTION, thrust_bias $THRUST_BIAS" >> "$RUN_DIR/git.txt"
+echo "reward field, deterministic, action $ACTION, thrust_bias $THRUST_BIAS, obs_history $OBS_HISTORY" >> "$RUN_DIR/git.txt"
 
 echo "== 1/3 train $(date)"
-bash oscar/run_isaac.sh train_rl_px4.py --headless --deterministic --reward field --action "$ACTION" --thrust_bias "$THRUST_BIAS" \
+bash oscar/run_isaac.sh train_rl_px4.py --headless --deterministic --reward field --action "$ACTION" --thrust_bias "$THRUST_BIAS" --obs_history "$OBS_HISTORY" \
     --num_envs "$NUM_ENVS" --iters "$ITERS" --steps 32 --save_path $B/checkpoints/$NAME.pt
 
 echo "== 2/3 policy video $(date)"
-bash oscar/run_isaac.sh play_px4.py --headless --enable_cameras --deterministic --action "$ACTION" --seconds 15 --hold 20 \
+bash oscar/run_isaac.sh play_px4.py --headless --enable_cameras --deterministic --action "$ACTION" --obs_history "$OBS_HISTORY" --seconds 15 --hold 20 \
     --checkpoint $B/checkpoints/$NAME.pt --out $B/videos/$NAME.mp4
 
 echo "== 3/3 export $(date)"
