@@ -21,6 +21,8 @@ NUM_ENVS="${NUM_ENVS:-1024}"
 ITERS="${ITERS:-600}"
 cd "$REPO_DIR"
 mkdir -p oscar/logs checkpoints videos
+NAME="${NAME:-px4_hold}"
+source oscar/run_record.sh
 
 echo "== 1/4 scripted check $(date)"
 bash oscar/run_isaac.sh play_px4.py --headless --enable_cameras --seconds 12 --hold 20 --out videos/px4_scripted_hold.mp4
@@ -36,4 +38,5 @@ bash oscar/run_isaac.sh play_px4.py --headless --enable_cameras --seconds 15 --h
 echo "== 4/4 export $(date)"
 bash oscar/run_isaac.sh deploy/export_policy.py checkpoints/px4_hold.pt deploy/policy.npz
 
+record_finish checkpoints/px4_hold.pt videos/px4_policy_hold.mp4 videos/px4_scripted_hold.mp4 deploy/policy.npz
 echo "done $(date) -> $REPO_DIR/videos/px4_policy_hold.mp4, $REPO_DIR/deploy/policy.npz"

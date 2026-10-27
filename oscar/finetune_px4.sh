@@ -24,6 +24,8 @@ ITERS="${ITERS:-600}"
 REWARD="${REWARD:-hover}"
 cd "$REPO_DIR"
 mkdir -p oscar/logs checkpoints videos
+source oscar/run_record.sh
+echo "init $INIT  reward $REWARD" >> "$RUN_DIR/git.txt"
 
 echo "== 1/3 fine-tune $INIT -> checkpoints/$NAME.pt $(date)"
 bash oscar/run_isaac.sh train_rl_px4.py --headless --num_envs "$NUM_ENVS" --iters "$ITERS" --steps 32 \
@@ -36,4 +38,5 @@ bash oscar/run_isaac.sh play_px4.py --headless --enable_cameras --seconds 15 --h
 echo "== 3/3 export $(date)"
 bash oscar/run_isaac.sh deploy/export_policy.py "checkpoints/$NAME.pt" "deploy/${NAME}.npz"
 
+record_finish "checkpoints/$NAME.pt" "videos/${NAME}.mp4" "deploy/${NAME}.npz"
 echo "done $(date) -> $REPO_DIR/videos/${NAME}.mp4, $REPO_DIR/deploy/${NAME}.npz"
