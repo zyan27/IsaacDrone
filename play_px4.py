@@ -26,6 +26,7 @@ parser.add_argument("--hold_height", type=float, default=0.5, help="hold height 
 parser.add_argument("--wait", type=float, default=1.0, help="seconds on the floor before climbing")
 parser.add_argument("--hold", type=float, default=6.0, help="seconds at the hold height")
 parser.add_argument("--out", type=str, default="videos/px4_dd24.mp4")
+parser.add_argument("--deterministic", action="store_true", help="no randomisation (bitwise_improvement/deterministic.py)")
 parser.add_argument("--checkpoint", type=str, default=None, help="train_rl_px4.py checkpoint")
 
 AppLauncher.add_app_launcher_args(parser)
@@ -91,6 +92,9 @@ def main():
     cfg.scene.num_envs = 1
     cfg.wall_dist_range_m = (cfg.room_half_width_m, cfg.room_half_width_m)  # match the drawn walls
     cfg.spawn_air_prob = 0.0  # always take off from the floor, as on the real drone
+    if args.deterministic:
+        from bitwise_improvement.deterministic import make_deterministic
+        make_deterministic(cfg)
     # Camera in a corner of the enclosure, looking across it at the target.
     cfg.viewer.eye = (0.9, 0.9, 1.0)
     cfg.viewer.lookat = (0.0, 0.0, 0.35)

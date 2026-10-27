@@ -22,6 +22,7 @@ parser.add_argument("--minibatch_size", type=int, default=8192)
 parser.add_argument("--save_path", type=str, default="checkpoints/px4_hover.pt")
 parser.add_argument("--init_checkpoint", type=str, default=None, help="start the actor (and its noise) from this checkpoint; the critic starts fresh")
 parser.add_argument("--reward", choices=["hover", "field"], default="hover", help="field: the smooth 3D field reward (see DronePX4EnvCfg)")
+parser.add_argument("--deterministic", action="store_true", help="no randomisation (bitwise_improvement/deterministic.py)")
 parser.add_argument("--critic_warmup", type=int, default=20, help="with --init_checkpoint: iterations that train only the critic")
 
 AppLauncher.add_app_launcher_args(parser)
@@ -42,6 +43,9 @@ def main():
     cfg = DronePX4EnvCfg()
     cfg.scene.num_envs = args.num_envs
     cfg.reward_mode = args.reward
+    if args.deterministic:
+        from bitwise_improvement.deterministic import make_deterministic
+        make_deterministic(cfg)
     env = DronePX4Env(cfg=cfg, render_mode=None)
     dev = env.device
     obs_dim, state_dim = cfg.observation_space, cfg.state_space

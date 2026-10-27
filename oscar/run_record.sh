@@ -2,7 +2,7 @@
 # export, log, git.txt = the exact code: commit + uncommitted diff) and a local git tag
 # run/<NAME>_<job id> on that commit.  List them: git tag -l 'run/*' -n1; ls runs/
 RUN_ID="${NAME}_${SLURM_JOB_ID:-local$(date +%Y%m%d_%H%M%S)}"
-RUN_DIR="runs/$RUN_ID"
+RUN_DIR="${RUNS_ROOT:-runs}/$RUN_ID"
 mkdir -p "$RUN_DIR"
 { echo "run $RUN_ID  started $(date)"; echo "commit $(git rev-parse HEAD)  $(git log -1 --format=%s)"
   echo "== uncommitted changes:"; git status --short; git diff; } > "$RUN_DIR/git.txt"

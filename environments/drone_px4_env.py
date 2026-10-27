@@ -119,6 +119,7 @@ class DronePX4EnvCfg(DirectRLEnvCfg):
     room_height_m = 2.5
     wall_clearance_m = 0.17   # arm 0.115 + prop radius 0.05
     spawn_xy_range_m = 0.5
+    spawn_yaw_rad = math.pi   # heading drawn in +-this
     crash_penalty = -200.0
     floor_penalty = -20.0     # per step on the floor once the command has left it
     ceiling_m = 1.0           # height (down ToF) above which the episode ends as a crash
@@ -174,6 +175,7 @@ class DronePX4EnvCfg(DirectRLEnvCfg):
     dropout_per_s = (0.1, 0.3)    # per stream
     dropout_s = (0.05, 1.0)
     age_clip_s = 1.0
+    stream_phase_random = True    # off: every stream's first sample lands at t = 0
     cmd_latency_s = (0.010, 0.080)  # Pi -> mavros -> PX4 setpoint delay + timer jitter
 
     # Physical parameters and their per-env randomisation (multiplicative unless noted).
@@ -447,7 +449,8 @@ class DronePX4Env(DirectRLEnv):
         k, dev, dt = len(env_ids), self.device, self.physics_dt
         u = lambda r: r[0] + (r[1] - r[0]) * torch.rand(k, device=dev)  # noqa: E731
         self.period[env_ids] = torch.stack([1.0 / u(r) for r in self.stream_rate], -1)
-        self.timer[env_ids] = torch.rand(k, self.n_streams, device=dev) * self.period[env_ids]
+        phase = torch.rand(k, self.n_streams, device=dev) if self.cfg.stream_phase_random else torch.zeros(k, self.n_streams, device=dev)
+        self.timer[env_ids] = phase * self.period[env_ids]
         self.lat_steps[env_ids] = torch.stack([(u(r) / dt).round().long() for r in self.stream_lat], -1)
         self.drop_rate[env_ids] = torch.stack([u(self.cfg.dropout_per_s) for _ in range(self.n_streams)], -1)
         self.drop_left[env_ids] = 0.0
@@ -575,7 +578,7 @@ class DronePX4Env(DirectRLEnv):
         lo, hi = self.cfg.target_z_range_m
         air_h = torch.where(air, lo + (hi - lo) * torch.rand(k, device=self.device), torch.zeros(k, device=self.device))
         root_state[:, 2] += getattr(self, "rest_z", 0.15) + 0.002 + air_h
-        yaw = (torch.rand(k, device=self.device) * 2 - 1) * math.pi
+        yaw = (torch.rand(k, device=self.device) * 2 - 1) * self.cfg.spawn_yaw_rad
         root_state[:, 3:7] = torch.stack([torch.cos(yaw / 2), torch.zeros_like(yaw), torch.zeros_like(yaw), torch.sin(yaw / 2)], -1)
         root_state[:, 7:13] = 0.0
         self.drone.write_root_pose_to_sim(root_state[:, 0:7], env_ids)
