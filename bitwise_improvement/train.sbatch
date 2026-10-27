@@ -10,8 +10,9 @@
 #SBATCH --error=bitwise_improvement/logs/%x_%j.err
 
 # No randomisation at all (deterministic.py): take off from the centre, heading 0, climb
-# straight to 0.5 m and hold it. Field reward, from scratch. Everything it writes stays in
-# bitwise_improvement/ (checkpoints, videos, logs, runs/<name>_<job>/).
+# straight to 0.5 m and hold it. Field reward, from scratch. Attitude + thrust output (PX4's
+# attitude loop keeps it level, as in STABILIZED), and the first policies climb (thrust bias).
+# Everything it writes stays in bitwise_improvement/ (checkpoints, videos, logs, runs/<name>_<job>/).
 #     sbatch bitwise_improvement/train.sbatch      (from ~/IsaacDrone)
 set -euo pipefail
 
@@ -23,14 +24,14 @@ B=bitwise_improvement
 cd "$REPO_DIR"
 mkdir -p $B/logs $B/checkpoints $B/videos
 RUNS_ROOT=$B/runs source oscar/run_record.sh
-echo "reward field, deterministic" >> "$RUN_DIR/git.txt"
+echo "reward field, deterministic, action attitude, thrust_bias 0.1" >> "$RUN_DIR/git.txt"
 
 echo "== 1/3 train $(date)"
-bash oscar/run_isaac.sh train_rl_px4.py --headless --deterministic --reward field \
+bash oscar/run_isaac.sh train_rl_px4.py --headless --deterministic --reward field --action attitude --thrust_bias 0.1 \
     --num_envs "$NUM_ENVS" --iters "$ITERS" --steps 32 --save_path $B/checkpoints/$NAME.pt
 
 echo "== 2/3 policy video $(date)"
-bash oscar/run_isaac.sh play_px4.py --headless --enable_cameras --deterministic --seconds 15 --hold 20 \
+bash oscar/run_isaac.sh play_px4.py --headless --enable_cameras --deterministic --action attitude --seconds 15 --hold 20 \
     --checkpoint $B/checkpoints/$NAME.pt --out $B/videos/$NAME.mp4
 
 echo "== 3/3 export $(date)"

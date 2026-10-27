@@ -127,13 +127,13 @@ class DronePX4EnvCfg(DirectRLEnvCfg):
     zone_bonus = 5.0          # ... earns this per step
     vel_penalty = 2.0         # per step, x |v|^2 (m/s)
     acc_penalty = 0.1         # per step, x |a|^2 (m/s^2)
-    # reward_mode "field" (fine-tuning). Per 20 Hz step once the command leaves the floor
-    # (before it: 0); an episode is <= 400 steps, the command starts within 40, and passes
-    # floor_target_m (0.3 m) 20 steps later. Whole-episode returns, worst to best (guaranteed):
-    #   crash                       <= 3 x 400 - 4000                    = -2800
-    #   sat (never lifted off)      -5 x <=20 - 2000                     in [-2100, -2000]
-    #   flew, then dipped / landed  >= -100 - 1000 - 500 ... <= 1200 - 1000 in [-1600, 200]
-    #   clean flight                >= -100 + 1 x 340 ... <= 3 x 400      in [240, 1200]
+    # reward_mode "field" (fine-tuning). Per 20 Hz step (0.05 s) once the command leaves the
+    # floor (before it: 0); an episode is <= 400 steps, the command starts within 40, and
+    # passes floor_target_m (0.3 m) 20 steps later. Whole-episode returns, worst to best (guaranteed):
+    #   sat (never lifted off)      -5 x 20 - 4500                         = -4600
+    #   crash                       >= -100 - 1000 - 3000 ... <= 1170 - 3000  in [-4100, -1830]
+    #   flew, then dipped / landed  >= -100 - 1000 - 500 ... <= 1170 - 1000   in [-1600, 170]
+    #   clean flight                >= -100 + 1 x 340 ... <= 3 x 390          in [240, 1170]
     # Airborne:  1 + 2 g, g in (0, 1]  ->  [1, 3]
     #   g = 1/(1+N) x prod over 6 faces (1 - exp(-d/scale)) x exp(-k_v |v|^2 - k_a |a|^2)
     #   N = (sum u^8)^(1/4), u = offset from (centre, target height) / field_box_m: ~1 on the cube;
@@ -152,8 +152,8 @@ class DronePX4EnvCfg(DirectRLEnvCfg):
     field_dip_m = 0.15
     field_dip_penalty = -1000.0
     field_land_penalty = -1500.0
-    field_sat_penalty = -2000.0
-    field_crash_penalty = -4000.0
+    field_sat_penalty = -4500.0
+    field_crash_penalty = -3000.0
     spawn_air_prob = 0.0      # share of episodes that start hovering at the target (off: always take off from the floor)
 
     # Sensor model (1-sigma). Down ToF: VL53L1X, reads ~0 on the floor, ~1.5 mm
@@ -175,6 +175,12 @@ class DronePX4EnvCfg(DirectRLEnvCfg):
     dropout_per_s = (0.1, 0.3)    # per stream
     dropout_s = (0.05, 1.0)
     age_clip_s = 1.0
+    # action_mode "attitude": the policy's roll / pitch outputs are attitude setpoints (FRD,
+    # +-att_tilt_max_rad at |a| = 1), turned into rate setpoints at 400 Hz by PX4's attitude
+    # P loop (MC_ROLL_P / MC_PITCH_P); yaw stays a rate. As /mavros/setpoint_raw/attitude with
+    # a quaternion + thrust and the roll / pitch rates ignored. "rates": CTBR (ACRO-like).
+    action_mode = "rates"
+    att_tilt_max_rad = 0.35
     stream_phase_random = True    # off: every stream's first sample lands at t = 0
     cmd_latency_s = (0.010, 0.080)  # Pi -> mavros -> PX4 setpoint delay + timer jitter
 
@@ -329,6 +335,10 @@ class DronePX4Env(DirectRLEnv):
     def _pre_physics_step(self, actions: torch.Tensor):
         thrust = torch.clamp(actions[:, 0], 0.0, 1.0)
         rates = torch.clamp(actions[:, 1:4], -self.rate_max, self.rate_max)
+        if self.cfg.action_mode == "attitude":
+            # policy_to_ctbr scaled roll / pitch to rates; undo that and scale to angles instead.
+            scale = self.cfg.att_tilt_max_rad / torch.tensor(POLICY_RATE_SCALE[0:2], device=self.device)
+            rates = torch.cat([actions[:, 1:3] * scale, rates[:, 2:3]], dim=-1)
         self.ctbr = torch.cat([thrust.unsqueeze(-1), rates], dim=-1)
         self._step_target(self.step_dt)
 
@@ -361,7 +371,8 @@ class DronePX4Env(DirectRLEnv):
         gyro_flu = self.drone.data.root_ang_vel_b
         gyro_frd = gyro_flu * torch.tensor([1.0, -1.0, -1.0], device=self.device)
         landed = self._height() < 0.02
-        self.motor_cmd = self.px4.step(sp[:, 0], sp[:, 1:4], gyro_frd, landed)
+        rate_sp = self._attitude_to_rates(sp[:, 1:4]) if self.cfg.action_mode == "attitude" else sp[:, 1:4]
+        self.motor_cmd = self.px4.step(sp[:, 0], rate_sp, gyro_frd, landed)
 
         alpha = (self.physics_dt / (self.motor_tau + self.physics_dt)).unsqueeze(-1)
         self.motor_speed += alpha * (self.motor_cmd - self.motor_speed)
@@ -538,6 +549,24 @@ class DronePX4Env(DirectRLEnv):
         r = torch.where(self.reset_terminated, torch.full_like(r, c.field_crash_penalty), r)
         r = torch.where(self.landed, land, r)
         return torch.where(self.sat, torch.full_like(r, c.field_sat_penalty), r)
+
+    def _attitude_to_rates(self, sp):
+        """PX4 attitude P loop: [roll, pitch (FRD, rad), yaw rate (FRD)] -> FRD rate setpoint.
+        Yaw setpoint = current yaw, so only roll / pitch are controlled as angles."""
+        q = self.drone.data.root_quat_w   # body (FLU) in world, wxyz
+        w, x, y, z = q.unbind(-1)
+        half = lambda a: (torch.cos(a / 2), torch.sin(a / 2))  # noqa: E731
+        zero = torch.zeros_like(w)
+        cz, sz = half(torch.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z)))
+        cy, sy = half(-sp[:, 1])   # FRD pitch about +y right = FLU pitch about -y
+        cx, sx = half(sp[:, 0])
+        q_sp = quat_mul(quat_mul(torch.stack([cz, zero, zero, sz], -1), torch.stack([cy, zero, sy, zero], -1)),
+                        torch.stack([cx, sx, zero, zero], -1))
+        q_err = quat_mul(q * torch.tensor([1.0, -1.0, -1.0, -1.0], device=q.device), q_sp)   # body frame
+        rot = 2.0 * torch.sign(q_err[:, 0:1]) * q_err[:, 1:3]                              # FLU x, y
+        p = torch.tensor(ATT.P[0:2], device=q.device)
+        rates = torch.stack([p[0] * rot[:, 0], -p[1] * rot[:, 1], sp[:, 2]], -1)            # -> FRD
+        return torch.clamp(rates, -self.rate_max, self.rate_max)
 
     def _tilt(self):
         up_b = quat_apply_inverse(self.drone.data.root_quat_w, torch.tensor([0.0, 0.0, 1.0], device=self.device).expand(self.num_envs, 3))

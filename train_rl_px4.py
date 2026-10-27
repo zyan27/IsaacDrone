@@ -23,6 +23,8 @@ parser.add_argument("--save_path", type=str, default="checkpoints/px4_hover.pt")
 parser.add_argument("--init_checkpoint", type=str, default=None, help="start the actor (and its noise) from this checkpoint; the critic starts fresh")
 parser.add_argument("--reward", choices=["hover", "field"], default="hover", help="field: the smooth 3D field reward (see DronePX4EnvCfg)")
 parser.add_argument("--deterministic", action="store_true", help="no randomisation (bitwise_improvement/deterministic.py)")
+parser.add_argument("--action", choices=["rates", "attitude"], default="rates", help="attitude: roll/pitch outputs are attitude setpoints")
+parser.add_argument("--thrust_bias", type=float, default=0.0, help="initial actor bias on the thrust output (0.1 ~ 5%% above hover: the first policies climb)")
 parser.add_argument("--critic_warmup", type=int, default=20, help="with --init_checkpoint: iterations that train only the critic")
 
 AppLauncher.add_app_launcher_args(parser)
@@ -43,6 +45,7 @@ def main():
     cfg = DronePX4EnvCfg()
     cfg.scene.num_envs = args.num_envs
     cfg.reward_mode = args.reward
+    cfg.action_mode = args.action
     if args.deterministic:
         from bitwise_improvement.deterministic import make_deterministic
         make_deterministic(cfg)
@@ -55,6 +58,7 @@ def main():
     with torch.no_grad():
         actor.net[-1].weight.mul_(0.01)
         actor.net[-1].bias.zero_()
+        actor.net[-1].bias[0] = args.thrust_bias
     critic = mlp(state_dim, 1).to(dev)
     log_std = nn.Parameter(torch.full((4,), -1.0, device=dev))
     if args.init_checkpoint:
