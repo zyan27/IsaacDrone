@@ -72,10 +72,10 @@ def policy_to_ctbr(a: torch.Tensor, hover_cmd: float = POLICY_HOVER_THRUST) -> t
     return torch.cat([thrust, rates], dim=-1)
 
 
-def set_policy_obs(cfg, history: int = 0, estimator: bool = False, oracle: bool = False):
+def set_policy_obs(cfg, history: int = 0, estimator: bool = False, oracle: bool = False, oracle_source: str = "true"):
     """Extra policy inputs (DronePX4EnvCfg.obs_history / obs_estimator / obs_oracle) and the
     observation size that goes with them: 24 + 4 history + 8 estimator + 6 oracle."""
-    cfg.obs_history, cfg.obs_estimator, cfg.obs_oracle = history, estimator, oracle
+    cfg.obs_history, cfg.obs_estimator, cfg.obs_oracle, cfg.oracle_source = history, estimator, oracle, oracle_source
     cfg.observation_space = 24 + 4 * history + 8 * int(estimator) + 6 * int(oracle)
     return cfg
 
@@ -200,6 +200,10 @@ class DronePX4EnvCfg(DirectRLEnvCfg):
     obs_history = 0
     obs_estimator = False
     obs_oracle = False
+    # oracle_source "estimate": the same 6 oracle slots, filled from the estimator instead of
+    # ground truth (heading 0 and the fixed box assumed: x from the front wall, y from left /
+    # right), so an estimate run differs from an oracle run only in those 6 numbers.
+    oracle_source = "true"
     est_alpha = 0.5
     est_beta = 0.15
     att_tilt_max_rad = 0.35
@@ -290,6 +294,8 @@ class DronePX4Env(DirectRLEnv):
         self.tof_hist = torch.zeros(n, cfg.obs_history, 4, device=dev)   # [:, 0] = previous step
         self.est_d = torch.zeros(n, 4, device=dev)   # estimator: ToF distances (down, front, left, right)
         self.est_v = torch.zeros(n, 4, device=dev)   # and their rates, m/s
+        self.oracle_gap = torch.zeros(6, device=dev)  # sum over steps of mean |estimate - truth|
+        self.oracle_gap_n = 0
         self.lifted = torch.zeros(n, dtype=torch.bool, device=dev)   # field reward: episode flags
         self.reached = torch.zeros(n, dtype=torch.bool, device=dev)
         self.dipped = torch.zeros(n, dtype=torch.bool, device=dev)
@@ -520,8 +526,28 @@ class DronePX4Env(DirectRLEnv):
         if self.cfg.obs_estimator:
             policy = torch.cat([policy, self._estimate(sensors)], dim=-1)
         if self.cfg.obs_oracle:
-            policy = torch.cat([policy, pos_err, d.root_lin_vel_w], dim=-1)
+            truth = torch.cat([pos_err, d.root_lin_vel_w], dim=-1)
+            if self.cfg.oracle_source == "true":
+                policy = torch.cat([policy, truth], dim=-1)
+            else:
+                est = self._estimate_state(sensors)
+                self.oracle_gap += (est - truth).abs().mean(0)   # train_rl_px4.py logs and resets it
+                self.oracle_gap_n += 1
+                policy = torch.cat([policy, est], dim=-1)
         return {"policy": policy, "critic": critic}
+
+    def _estimate_state(self, sensors):
+        """Oracle-shaped estimate from the ToF filter: [pos error x, y, z, world velocity x, y, z].
+        Assumes heading 0 in the fixed box (walls at +-room_half_width_m): x = W - front,
+        y = (right - left) / 2, height = down."""
+        est = self._estimate(sensors)
+        dist, rate = est[:, 0:4], est[:, 4:8]
+        w = self.cfg.room_half_width_m
+        x = w - dist[:, 1]
+        y = 0.5 * (dist[:, 3] - dist[:, 2])
+        pos_err = torch.stack([-x, -y, self.target_z - dist[:, 0]], -1)
+        vel = torch.stack([-rate[:, 1], 0.5 * (rate[:, 3] - rate[:, 2]), rate[:, 0]], -1)
+        return torch.cat([pos_err, vel], dim=-1)
 
     def _estimate(self, sensors):
         """Alpha-beta filter per ToF on held sensor values (what the Pi has): predict distance and

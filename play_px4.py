@@ -30,6 +30,8 @@ parser.add_argument("--deterministic", action="store_true", help="no randomisati
 parser.add_argument("--obs_history", type=int, default=0, help="past steps of ToF readings in the policy observation (must match training)")
 parser.add_argument("--obs_estimator", action="store_true", help="add the ToF+IMU filter estimates to the policy observation (must match training)")
 parser.add_argument("--obs_oracle", action="store_true", help="add true position error + velocity to the policy observation (sim only)")
+parser.add_argument("--oracle_source", choices=["true", "estimate"], default="true", help="with --obs_oracle: ground truth, or the same 6 numbers from the ToF+IMU estimator")
+parser.add_argument("--seed", type=int, default=0, help="seeds torch, the env and the network init, so runs differ only in what you change")
 parser.add_argument("--action", choices=["rates", "attitude"], default="rates", help="must match training")
 parser.add_argument("--checkpoint", type=str, default=None, help="train_rl_px4.py checkpoint")
 
@@ -97,7 +99,9 @@ def main():
     cfg.wall_dist_range_m = (cfg.room_half_width_m, cfg.room_half_width_m)  # match the drawn walls
     cfg.spawn_air_prob = 0.0  # always take off from the floor, as on the real drone
     cfg.action_mode = args.action
-    set_policy_obs(cfg, args.obs_history, args.obs_estimator, args.obs_oracle)
+    set_policy_obs(cfg, args.obs_history, args.obs_estimator, args.obs_oracle, args.oracle_source)
+    cfg.seed = args.seed
+    torch.manual_seed(args.seed)
     if args.deterministic:
         from bitwise_improvement.deterministic import make_deterministic
         make_deterministic(cfg)

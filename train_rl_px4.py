@@ -26,6 +26,8 @@ parser.add_argument("--deterministic", action="store_true", help="no randomisati
 parser.add_argument("--obs_history", type=int, default=0, help="past steps of ToF readings in the policy observation (must match training)")
 parser.add_argument("--obs_estimator", action="store_true", help="add the ToF+IMU filter estimates to the policy observation (must match training)")
 parser.add_argument("--obs_oracle", action="store_true", help="add true position error + velocity to the policy observation (sim only)")
+parser.add_argument("--oracle_source", choices=["true", "estimate"], default="true", help="with --obs_oracle: ground truth, or the same 6 numbers from the ToF+IMU estimator")
+parser.add_argument("--seed", type=int, default=0, help="seeds torch, the env and the network init, so runs differ only in what you change")
 parser.add_argument("--action", choices=["rates", "attitude"], default="rates", help="attitude: roll/pitch outputs are attitude setpoints")
 parser.add_argument("--thrust_bias", type=float, default=0.0, help="initial actor bias on the thrust output (0.1 ~ 5%% above hover: the first policies climb)")
 parser.add_argument("--critic_warmup", type=int, default=20, help="with --init_checkpoint: iterations that train only the critic")
@@ -49,7 +51,9 @@ def main():
     cfg.scene.num_envs = args.num_envs
     cfg.reward_mode = args.reward
     cfg.action_mode = args.action
-    set_policy_obs(cfg, args.obs_history, args.obs_estimator, args.obs_oracle)
+    set_policy_obs(cfg, args.obs_history, args.obs_estimator, args.obs_oracle, args.oracle_source)
+    cfg.seed = args.seed
+    torch.manual_seed(args.seed)
     if args.deterministic:
         from bitwise_improvement.deterministic import make_deterministic
         make_deterministic(cfg)
@@ -57,6 +61,7 @@ def main():
     dev = env.device
     obs_dim, state_dim = cfg.observation_space, cfg.state_space
 
+    torch.manual_seed(args.seed)   # same initial weights and sampling for the same seed, whatever the env drew
     actor = PX4Actor(obs_dim).to(dev)
     # Start near a zero action (hover thrust, zero rates) instead of a random thrash.
     with torch.no_grad():
@@ -157,6 +162,11 @@ def main():
         print(f"iter={it:04d} step_reward={step_rew:.4f} ep_return={ep_return:7.1f} "
               f"episodes={n_eps} mean_ep_len={ep_s:5.2f}s "
               f"crashes={crashes} std={log_std.exp().mean().item():.3f} elapsed={time.time() - t_start:6.0f}s")
+        if env.oracle_gap_n:
+            g = (env.oracle_gap / env.oracle_gap_n).tolist()
+            print("    estimate - truth, mean |gap|: pos err x {:.3f} y {:.3f} z {:.3f} m, vel x {:.3f} y {:.3f} z {:.3f} m/s".format(*g))
+            env.oracle_gap.zero_()
+            env.oracle_gap_n = 0
 
         # Best = mean return of the episodes that ended this iteration. Not the step reward:
         # policies that die young sample the start of the episode more and scored best on it.
