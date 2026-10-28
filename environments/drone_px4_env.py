@@ -171,6 +171,23 @@ class DronePX4EnvCfg(DirectRLEnvCfg):
     side_tof_range_m = (2.0, 3.5)       # side ToFs off the net, per episode; beyond = no return
     tof_invalid_prob = 0.05             # random no-return readings
     tof_noise_m = 0.01
+    # wall_rough: the walls are not flat. Per episode, each of the 4 walls is moved toward
+    # the drone by offset + tilt along it + tilt with height + two ripples (along it, with
+    # height); a side ray that hits it reads shorter by that bulge / cos(incidence).
+    # Collisions still use the flat walls (the bulge is at most ~0.15 m).
+    wall_rough = False
+    wall_rough_offset_m = 0.05     # +- per wall
+    wall_rough_tilt = 0.05         # +- m per m, along the wall and with height
+    wall_rough_ripple_m = 0.03     # +- amplitude of each ripple
+    wall_rough_wavelength_m = (0.3, 1.0)
+    # net_noise: the side ToFs as logged off the real net (logs 2026-10-25, side ToFs at rest
+    # 0.5-7.5 cm noise, 0-45 % no return in flight, ~1-2 % jumps > 15 cm). Per episode and
+    # per side ToF: noise sigma, no-return share and pass-through share (reads behind the net).
+    net_noise = False
+    net_sigma_m = (0.005, 0.075)
+    net_miss_prob = (0.0, 0.45)
+    net_through_prob = (0.0, 0.03)
+    net_through_m = (0.2, 1.0)      # extra range when the ray passes through the mesh
     att_noise_rad = 0.01
     gyro_noise_rps = 0.003
     accel_noise_mps2 = 0.05
@@ -251,6 +268,10 @@ class DronePX4Env(DirectRLEnv):
         self.wall_lo = torch.full((n, 2), -cfg.room_half_width_m, device=dev)
         self.wall_hi = torch.full((n, 2), cfg.room_half_width_m, device=dev)
         self.side_range = torch.full((n,), cfg.side_tof_range_m[1], device=dev)
+        self.wall_shape = torch.zeros(n, 4, 9, device=dev)   # per wall: offset, 2 tilts, 2 x (amp, wavenumber, phase)
+        self.net_sigma = torch.zeros(n, 3, device=dev)       # per side ToF (front, left, right)
+        self.net_miss = torch.zeros(n, 3, device=dev)
+        self.net_through = torch.zeros(n, 3, device=dev)
 
         self.px4 = PX4RateEmulator(n, self.physics_dt, dev)
         self.ctbr = torch.zeros(n, 4, device=dev)       # last setpoint sent to PX4
@@ -446,11 +467,33 @@ class DronePX4Env(DirectRLEnv):
         safe = torch.where(dirs_w.abs() < 1e-6, torch.full_like(dirs_w, 1e-6), dirs_w)
         t = torch.where(dirs_w > 0, (hi - p) / safe, (lo - p) / safe)
         t = torch.where(dirs_w.abs() < 1e-6, torch.full_like(t, 1e6), t).clamp(min=0.0)
-        r = t.min(dim=-1).values + self.cfg.tof_noise_m * torch.randn(n, 4, device=dev)
+        t, axis = t.min(dim=-1)
+        r = t + self.cfg.tof_noise_m * torch.randn(n, 4, device=dev)
+        if self.cfg.wall_rough:
+            # Wall index: x walls 0 (-x) / 1 (+x), y walls 2 (-y) / 3 (+y); floor / ceiling: none.
+            on_wall = axis < 2
+            dir_axis = dirs_w.gather(-1, axis.clamp(max=1).unsqueeze(-1)).squeeze(-1)
+            wall = (2 * axis + (dir_axis > 0).long()).clamp(max=3)
+            hit = p + t.unsqueeze(-1) * dirs_w                                # (n, 4, 3)
+            along = torch.where(axis == 0, hit[..., 1], hit[..., 0])
+            z = hit[..., 2] - 0.5
+            w = self.wall_shape.gather(1, wall.unsqueeze(-1).expand(n, 4, 9))  # (n, 4, 9)
+            bulge = (w[..., 0] + w[..., 1] * along + w[..., 2] * z
+                     + w[..., 3] * torch.sin(w[..., 4] * along + w[..., 5])
+                     + w[..., 6] * torch.sin(w[..., 7] * z + w[..., 8]))
+            r = torch.where(on_wall, r - bulge / dir_axis.abs().clamp(min=0.3), r)
+        if self.cfg.net_noise:
+            side = r[:, 1:4] + self.net_sigma * torch.randn(n, 3, device=dev)
+            through = torch.rand(n, 3, device=dev) < self.net_through
+            a, b = self.cfg.net_through_m
+            side = torch.where(through, side + a + (b - a) * torch.rand(n, 3, device=dev), side)
+            r = torch.cat([r[:, :1], side], -1)
         r = r.clamp(min=0.0)
         max_r = torch.cat([torch.full((n, 1), self.cfg.tof_range_max_m, device=dev),
                            self.side_range.unsqueeze(-1).expand(n, 3)], -1)
         miss = (r > max_r) | (torch.rand(n, 4, device=dev) < self.cfg.tof_invalid_prob)
+        if self.cfg.net_noise:
+            miss[:, 1:4] |= torch.rand(n, 3, device=dev) < self.net_miss
         return torch.where(miss, torch.full_like(r, float("nan")), r)
 
     def _raw_sensors(self):
@@ -771,6 +814,17 @@ class DronePX4Env(DirectRLEnv):
             self.wall_lo[env_ids] = -u(self.cfg.wall_dist_range_m, 2)
             self.wall_hi[env_ids] = u(self.cfg.wall_dist_range_m, 2)
             self.side_range[env_ids] = u(self.cfg.side_tof_range_m)
+            c = self.cfg
+            sym = lambda a, *shape: (torch.rand(k, *shape, device=dev) * 2 - 1) * a  # noqa: E731
+            wave = lambda: 2 * math.pi / u(c.wall_rough_wavelength_m, 4)  # noqa: E731
+            phase = lambda: 2 * math.pi * torch.rand(k, 4, device=dev)  # noqa: E731
+            self.wall_shape[env_ids] = torch.stack([
+                sym(c.wall_rough_offset_m, 4), sym(c.wall_rough_tilt, 4), sym(c.wall_rough_tilt, 4),
+                sym(c.wall_rough_ripple_m, 4), wave(), phase(),
+                sym(c.wall_rough_ripple_m, 4), wave(), phase()], -1)
+            self.net_sigma[env_ids] = u(c.net_sigma_m, 3)
+            self.net_miss[env_ids] = u(c.net_miss_prob, 3)
+            self.net_through[env_ids] = u(c.net_through_prob, 3)
             self.cg_offset[env_ids] = (torch.rand(k, 2, device=dev) * 2 - 1) * self.cfg.cg_offset_m
             tilt = (torch.rand(k, 2, device=dev) * 2 - 1) * self.cfg.imu_tilt_rad
             mis = torch.cat([torch.ones(k, 1, device=dev), 0.5 * tilt, torch.zeros(k, 1, device=dev)], -1)

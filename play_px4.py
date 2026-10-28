@@ -34,6 +34,8 @@ parser.add_argument("--oracle_source", choices=["true", "estimate", "wallmap"], 
 parser.add_argument("--seed", type=int, default=0, help="seeds torch, the env and the network init, so runs differ only in what you change")
 parser.add_argument("--yaw_hold", action="store_true", help="attitude mode: PX4 holds heading 0 (must match training)")
 parser.add_argument("--action", choices=["rates", "attitude"], default="rates", help="must match training")
+parser.add_argument("--wall_rough", action="store_true", help="walls not flat (offset, tilt, ripples per episode)")
+parser.add_argument("--net_noise", action="store_true", help="side ToFs as logged off the real net (noise, no returns, pass-through)")
 parser.add_argument("--checkpoint", type=str, default=None, help="train_rl_px4.py checkpoint")
 
 AppLauncher.add_app_launcher_args(parser)
@@ -107,6 +109,7 @@ def main():
     if args.deterministic:
         from bitwise_improvement.deterministic import make_deterministic
         make_deterministic(cfg)
+    cfg.wall_rough, cfg.net_noise = args.wall_rough, args.net_noise   # after: these are the test
     # Camera in a corner of the enclosure, looking across it at the target.
     cfg.viewer.eye = (0.9, 0.9, 1.0)
     cfg.viewer.lookat = (0.0, 0.0, 0.35)
