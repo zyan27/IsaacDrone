@@ -1,6 +1,9 @@
 """Export a train_rl_px4.py checkpoint to a numpy .npz the Pi can run without torch.
 
-    python deploy/export_policy.py checkpoints/px4_hover.pt deploy/policy.npz
+    python deploy/export_policy.py checkpoints/px4_hover.pt deploy/policy.npz [rates|attitude]
+
+The action mode (default rates) is stored in the .npz so policy_node.py sends the matching
+setpoint (attitude: roll / pitch angles, +-ATT_TILT_MAX_RAD at |a| = 1).
 
 Plain torch only (no Isaac), so it runs on the login node or a laptop.
 """
@@ -15,9 +18,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 POLICY_HOVER_THRUST = 0.47   # keep in sync with environments/drone_px4_env.py
 POLICY_THRUST_RANGE = 0.25
 POLICY_RATE_SCALE = (3.0, 3.0, 2.0)
+ATT_TILT_MAX_RAD = 0.35      # DronePX4EnvCfg.att_tilt_max_rad
 
 
-def main(src: str, dst: str):
+def main(src: str, dst: str, action_mode: str = "rates"):
+    assert action_mode in ("rates", "attitude")
     ckpt = torch.load(src, map_location="cpu")
     sd = ckpt["actor"]
     layers = sorted({k.split(".")[1] for k in sd if k.startswith("net.")}, key=int)
@@ -28,6 +33,8 @@ def main(src: str, dst: str):
     arrays["hover_thrust"] = np.float32(POLICY_HOVER_THRUST)
     arrays["thrust_range"] = np.float32(POLICY_THRUST_RANGE)
     arrays["rate_scale"] = np.array(POLICY_RATE_SCALE, np.float32)
+    arrays["action_mode"] = np.array(action_mode)
+    arrays["att_tilt_max_rad"] = np.float32(ATT_TILT_MAX_RAD)
     np.savez(dst, **arrays)
 
     # Check the numpy forward pass (same math as deploy/policy_node.py) against torch.
@@ -48,4 +55,4 @@ def main(src: str, dst: str):
 
 
 if __name__ == "__main__":
-    main(*sys.argv[1:3])
+    main(*sys.argv[1:4])
