@@ -42,7 +42,7 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Imu, Range
 
-from oracle_core import FRD, Policy, WallMap, attitude_quat_enu, observation, qmul, tilt_deg, yaw_of
+from oracle_core import FRD, Policy, Scripted, WallMap, attitude_quat_enu, observation, qmul, tilt_deg, yaw_of
 
 RATE_HZ = 20.0
 TARGET_SPEED_MPS = 0.3
@@ -56,7 +56,8 @@ class PolicyNode(Node):
     def __init__(self, args):
         super().__init__("dd24_policy")
         self.args = args
-        self.policy = Policy(args.policy)
+        self.scripted = args.controller == "scripted"
+        self.policy = Scripted(max_tilt_rad=math.radians(args.max_tilt_deg)) if self.scripted else Policy(args.policy, args.action)
         self.imu = None
         self.tofs = [None] * 4    # down, front, left, right
         self.side_hist = collections.deque()   # (time, front, left, right) readings, last 1 s
@@ -78,7 +79,7 @@ class PolicyNode(Node):
             self.log.write("t,active,target,tof_down,tof_front,tof_left,tof_right,tof_age,imu_age,tilt_deg,"
                            "est_x,est_y,est_z,est_vx,est_vy,est_vz,thrust,roll,pitch,yaw_rate\n")
         self.create_timer(1.0 / RATE_HZ, self.tick)
-        self.get_logger().info(f"policy {args.policy} ({self.policy.action_mode}, {self.policy.n_obs} inputs"
+        self.get_logger().info(f"{'scripted PID, max tilt ' + str(args.max_tilt_deg) + ' deg' if self.scripted else 'policy ' + args.policy} ({self.policy.action_mode}, {self.policy.n_obs} inputs"
                                f"{', wall-map estimator' if self.policy.oracle else ''}), "
                                f"ToF down/front/left/right {topics}, height {args.height} m (land by hand)")
 
@@ -132,6 +133,7 @@ class PolicyNode(Node):
             self.target += float(np.clip(self.goal(t) - self.target, -step, step))
             q_enu = self.quat_enu()
             quat = qmul(self.q_yaw0_inv, q_enu)            # takeoff frame, as in training
+            quat = -quat if quat[0] < 0 else quat           # w >= 0, as the sim's quaternions near level
             w, a = self.imu.angular_velocity, self.imu.linear_acceleration
             gyro = np.array([w.x, w.y, w.z], np.float32) * FRD
             acc = np.array([a.x, a.y, a.z], np.float32) * FRD
@@ -147,7 +149,7 @@ class PolicyNode(Node):
                                         f"estimate xy ({est[0][0]:+.2f}, {est[0][1]:+.2f}) m")
                 self.done = True
             else:
-                sp = self.policy.setpoint(self.policy(obs))
+                sp = self.policy.command(est, quat, self.target) if self.scripted else self.policy.setpoint(self.policy(obs))
                 sp[0] = min(sp[0], self.args.max_thrust)
         if not self.armed_offboard:
             self.target = 0.0
@@ -175,7 +177,11 @@ class PolicyNode(Node):
 
 def main():
     p = argparse.ArgumentParser()
+    p.add_argument("--controller", choices=["policy", "scripted"], default="policy",
+                   help="scripted: height PID on the down ToF + wall-map position hold, no RL")
+    p.add_argument("--max_tilt_deg", type=float, default=5.0, help="scripted: tilt limit for position hold (0 = level, height only)")
     p.add_argument("--policy", default="dd24_oracle_wallmap.npz")
+    p.add_argument("--action", choices=["rates", "attitude"], help="override the .npz action mode (older exports have none = rates)")
     p.add_argument("--down_topic", default="/noducksgiven/right_tof_driver_node/range")
     p.add_argument("--front_topic", required=True)
     p.add_argument("--left_topic", required=True)

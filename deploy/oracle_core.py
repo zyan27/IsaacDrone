@@ -42,7 +42,7 @@ def tilt_deg(q):
 class Policy:
     """MLP from deploy/export_policy.py (ELU hidden layers, tanh output)."""
 
-    def __init__(self, path):
+    def __init__(self, path, action_mode=None):
         z = np.load(path)
         self.layers = []
         i = 0
@@ -50,7 +50,7 @@ class Policy:
             self.layers.append((z[f"W{i}"], z[f"b{i}"]))
             i += 1
         self.hover, self.thr_range, self.rate_scale = float(z["hover_thrust"]), float(z["thrust_range"]), z["rate_scale"]
-        self.action_mode = str(z["action_mode"]) if "action_mode" in z else "rates"
+        self.action_mode = action_mode or (str(z["action_mode"]) if "action_mode" in z else "rates")
         self.tilt_max = float(z["att_tilt_max_rad"]) if "att_tilt_max_rad" in z else 0.35
         self.n_obs = self.layers[0][0].shape[1]
         self.oracle = self.n_obs == 30          # 24 base + 6 oracle slots (set_policy_obs)
@@ -145,3 +145,29 @@ def attitude_quat_enu(roll_frd, pitch_frd, yaw_enu):
     cy, sy = h(-pitch_frd)
     cx, sx = h(roll_frd)
     return qmul(qmul(np.array([cz, 0, 0, sz]), np.array([cy, 0, sy, 0])), np.array([cx, sx, 0, 0]))
+
+
+class Scripted:
+    """play_px4.py's reference commander on the wall-map estimate instead of ground truth:
+    height PID on the down ToF, position PD -> tilt (clipped to max_tilt), attitude setpoints."""
+    action_mode, oracle, n_obs = "attitude", True, 0
+
+    def __init__(self, hover=0.47, max_tilt_rad=math.radians(5.0)):
+        self.hover, self.max_tilt, self.z_int = hover, max_tilt_rad, 0.0
+
+    def command(self, est, quat, target):
+        p, v = est
+        if target <= 0.0:
+            self.z_int = 0.0
+            return np.zeros(4, np.float32)
+        z_err = target - p[2]
+        if abs(z_err) < 0.15:            # no windup on the climb
+            self.z_int += z_err * 0.02
+        thrust = min(max(self.hover + 0.12 * z_err - 0.16 * v[2] + 0.08 * self.z_int, 0.0), 1.0)
+        ax, ay = 1.5 * -p[0] - 2.0 * v[0], 1.5 * -p[1] - 2.0 * v[1]
+        yaw = yaw_of(quat)
+        c, s = math.cos(yaw), math.sin(yaw)
+        fwd, left = c * ax + s * ay, -s * ax + c * ay
+        pitch_flu = min(max(fwd / G, -self.max_tilt), self.max_tilt)    # +pitch tilts thrust forward
+        roll_flu = min(max(-left / G, -self.max_tilt), self.max_tilt)   # -roll tilts thrust left
+        return np.array([thrust, roll_flu, -pitch_flu, 0.0], np.float32)  # FRD roll, pitch

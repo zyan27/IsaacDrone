@@ -19,7 +19,7 @@ import sys
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from oracle_core import FRD, Policy, WallMap, observation, qmul, tilt_deg, yaw_of  # noqa: E402
+from oracle_core import FRD, Policy, Scripted, WallMap, observation, qmul, tilt_deg, yaw_of  # noqa: E402
 
 TOPICS = {"down": "right", "front": "front", "left": "left", "right": "bottom"}
 
@@ -48,9 +48,11 @@ def main():
     p.add_argument("policy")
     p.add_argument("logs", nargs="+")
     p.add_argument("--height", type=float, default=0.5)
+    p.add_argument("--action", choices=["rates", "attitude"])
+    p.add_argument("--scripted", action="store_true", help="policy_node.py --controller scripted (the policy file is ignored)")
     args = p.parse_args()
-    pol = Policy(args.policy)
-    print(f"{args.policy}: {pol.action_mode}, {pol.n_obs} inputs, hover {pol.hover}, tilt max {math.degrees(pol.tilt_max):.0f} deg")
+    pol = Scripted() if args.scripted else Policy(args.policy, args.action)
+    print("scripted PID" if args.scripted else f"{args.policy}: {pol.action_mode}, {pol.n_obs} inputs, hover {pol.hover}, tilt max {math.degrees(pol.tilt_max):.0f} deg")
     bad = 0
     for d in args.logs:
         tof, imu, es = load(d)
@@ -74,12 +76,13 @@ def main():
                     t += 0.05
                     continue
                 quat = qmul(q_inv, q)
+                quat = -quat if quat[0] < 0 else quat
                 gyro, acc = (w * FRD).astype(np.float32), (a * FRD).astype(np.float32)
                 r = np.array([h[2] for h in held], np.float32)
                 ages = np.array([t - h[1] for h in held] + [t - s_imu])
                 est = wm.step(r, quat, acc, ages[0:4]) if pol.oracle else None
                 obs = observation(r, quat, gyro, acc, ages, last_sp, target, est)
-                sp = pol.setpoint(pol(obs))
+                sp = pol.command(est, quat, target) if args.scripted else pol.setpoint(pol(obs))
                 last_sp = sp
                 out.append((t - t0, obs, sp, tilt_deg(q), est))
                 t += 0.05
