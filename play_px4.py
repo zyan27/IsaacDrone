@@ -27,6 +27,7 @@ parser.add_argument("--wait", type=float, default=1.0, help="seconds on the floo
 parser.add_argument("--hold", type=float, default=6.0, help="seconds at the hold height")
 parser.add_argument("--out", type=str, default="videos/px4_dd24.mp4")
 parser.add_argument("--deterministic", action="store_true", help="no randomisation (bitwise_improvement/deterministic.py)")
+parser.add_argument("--obs_pi16", action="store_true", help="the Duckiedrone Pi node's 16 inputs (use with --action velocity; tanh actor)")
 parser.add_argument("--real_imu_noise", action="store_true", help="IMU noise = in-flight vibration from the real logs (applied after --deterministic)")
 parser.add_argument("--obs_history", type=int, default=0, help="past steps of ToF readings in the policy observation (must match training)")
 parser.add_argument("--obs_estimator", action="store_true", help="add the ToF+IMU filter estimates to the policy observation (must match training)")
@@ -34,7 +35,7 @@ parser.add_argument("--obs_oracle", action="store_true", help="add true position
 parser.add_argument("--oracle_source", choices=["true", "estimate", "wallmap"], default="true", help="with --obs_oracle: ground truth, or the same 6 numbers from the ToF+IMU estimator / the wall-map estimator")
 parser.add_argument("--seed", type=int, default=0, help="seeds torch, the env and the network init, so runs differ only in what you change")
 parser.add_argument("--yaw_hold", action="store_true", help="attitude mode: PX4 holds heading 0 (must match training)")
-parser.add_argument("--action", choices=["rates", "attitude"], default="rates", help="must match training")
+parser.add_argument("--action", choices=["rates", "attitude", "velocity"], default="rates", help="must match training")
 parser.add_argument("--wall_rough", action="store_true", help="walls not flat (offset, tilt, ripples per episode)")
 parser.add_argument("--net_noise", action="store_true", help="side ToFs as logged off the real net (noise, no returns, pass-through)")
 parser.add_argument("--checkpoint", type=str, default=None, help="train_rl_px4.py checkpoint")
@@ -104,7 +105,7 @@ def main():
     cfg.spawn_air_prob = 0.0  # always take off from the floor, as on the real drone
     cfg.action_mode = args.action
     cfg.att_yaw_hold = args.yaw_hold
-    set_policy_obs(cfg, args.obs_history, args.obs_estimator, args.obs_oracle, args.oracle_source)
+    set_policy_obs(cfg, args.obs_history, args.obs_estimator, args.obs_oracle, args.oracle_source, args.obs_pi16)
     cfg.seed = args.seed
     torch.manual_seed(args.seed)
     if args.deterministic:
@@ -121,7 +122,7 @@ def main():
     actor = None
     if args.checkpoint:
         ckpt = torch.load(args.checkpoint, map_location=env.device)
-        actor = PX4Actor(cfg.observation_space).to(env.device)
+        actor = PX4Actor(cfg.observation_space, act=ckpt.get("act", "elu")).to(env.device)
         actor.load_state_dict(ckpt["actor"])
         actor.eval()
         print(f"policy from {args.checkpoint} (iter {ckpt.get('iter')}, episode return {ckpt.get('best_ep_return')})")
@@ -152,7 +153,7 @@ def main():
         env.target_goal[:] = height_goal(t)
         env.target_timer[:] = 1e9  # the profile above drives the command, not the env's random one
         with torch.inference_mode():
-            o = obs["policy"][0].cpu()
+            o = env._sensors()[0].cpu()   # held ToF / ages for the log, whatever the policy sees
             sp = policy_to_ctbr(actor(obs["policy"])) if actor is not None else commander(env, z_int)
             obs, _, terminated, truncated, _ = env.step(sp)
 

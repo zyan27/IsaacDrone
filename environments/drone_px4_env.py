@@ -78,11 +78,14 @@ def set_real_imu_noise(cfg):
     return cfg
 
 
-def set_policy_obs(cfg, history: int = 0, estimator: bool = False, oracle: bool = False, oracle_source: str = "true"):
+def set_policy_obs(cfg, history: int = 0, estimator: bool = False, oracle: bool = False, oracle_source: str = "true",
+                   pi16: bool = False):
     """Extra policy inputs (DronePX4EnvCfg.obs_history / obs_estimator / obs_oracle) and the
-    observation size that goes with them: 24 + 4 history + 8 estimator + 6 oracle."""
+    observation size that goes with them: 24 + 4 history + 8 estimator + 6 oracle; or the Pi's
+    16 inputs alone (obs_pi16)."""
     cfg.obs_history, cfg.obs_estimator, cfg.obs_oracle, cfg.oracle_source = history, estimator, oracle, oracle_source
-    cfg.observation_space = 24 + 4 * history + 8 * int(estimator) + 6 * int(oracle)
+    cfg.obs_pi16 = pi16
+    cfg.observation_space = 16 if pi16 else 24 + 4 * history + 8 * int(estimator) + 6 * int(oracle)
     return cfg
 
 
@@ -214,7 +217,21 @@ class DronePX4EnvCfg(DirectRLEnvCfg):
     # +-att_tilt_max_rad at |a| = 1), turned into rate setpoints at 400 Hz by PX4's attitude
     # P loop (MC_ROLL_P / MC_PITCH_P); yaw stays a rate. As /mavros/setpoint_raw/attitude with
     # a quaternion + thrust and the roll / pitch rates ignored. "rates": CTBR (ACRO-like).
+    # "velocity": the Duckiedrone Pi node's interface: forward / left / up velocity and yaw rate
+    # (CCW) in the heading frame, +-vel_cmd_scale at |a| = 1, sent as /mavros/setpoint_raw/local.
+    # PX4's velocity loop (MPC_XY_VEL_*_ACC, MPC_Z_VEL_*_ACC, defaults) is emulated at 400 Hz:
+    # velocity error -> acceleration -> tilt + collective thrust -> the attitude P loop above.
     action_mode = "rates"
+    vel_cmd_scale = (0.5, 0.5, 0.3, 1.0)
+    mpc_xy_vel_pid = (1.8, 0.4, 0.2)
+    mpc_z_vel_pid = (4.0, 2.0, 0.0)
+    mpc_tilt_max_rad = math.radians(45.0)
+    mpc_vel_int_max = 1.0           # m/s of integrated velocity error (anti-windup)
+    # obs_pi16: the Pi node's 16 inputs instead of the sensor observation: target - position (3) and
+    # velocity (3) in the heading frame (FLU, yaw removed), roll, pitch (FLU, right side down /
+    # nose down +), target yaw - yaw (target yaw 0, wrapped, CCW +), body rates p, q, r (FLU),
+    # previous action (4). Ground truth: on the drone they come from PX4's estimate (optical flow).
+    obs_pi16 = False
     # obs_history k > 0: the policy also sees the 4 held ToF readings of each of the last k
     # policy steps (k x 0.05 s), so it can tell rising from falling and drifting from still.
     # Only the ToFs: the rest of the observation does not change with velocity.
@@ -322,6 +339,8 @@ class DronePX4Env(DirectRLEnv):
         self.cmd_hist = torch.zeros(self.cmd_hist_len, n, 4, device=dev)
         self.cmd_delay = torch.zeros(n, dtype=torch.long, device=dev)
 
+        self.vel_int = torch.zeros(n, 3, device=dev)        # emulated PX4 velocity loop integrator
+        self.prev_action = torch.zeros(n, 4, device=dev)    # obs_pi16: last policy output
         self.target_z = torch.zeros(n, device=dev)
         self.target_goal = torch.zeros(n, device=dev)
         self.target_timer = torch.zeros(n, device=dev)
@@ -403,6 +422,14 @@ class DronePX4Env(DirectRLEnv):
     def _pre_physics_step(self, actions: torch.Tensor):
         thrust = torch.clamp(actions[:, 0], 0.0, 1.0)
         rates = torch.clamp(actions[:, 1:4], -self.rate_max, self.rate_max)
+        if self.cfg.action_mode == "velocity":
+            # Undo policy_to_ctbr: the env gets the raw [-1, 1] action back and scales it to velocities.
+            a = torch.cat([(actions[:, 0:1] - POLICY_HOVER_THRUST) / POLICY_THRUST_RANGE,
+                           actions[:, 1:4] / torch.tensor(POLICY_RATE_SCALE, device=self.device)], -1).clamp(-1.0, 1.0)
+            self.prev_action = a
+            self.ctbr = a * torch.tensor(self.cfg.vel_cmd_scale, device=self.device)
+            self._step_target(self.step_dt)
+            return
         if self.cfg.action_mode == "attitude":
             # policy_to_ctbr scaled roll / pitch to rates; undo that and scale to angles instead.
             scale = self.cfg.att_tilt_max_rad / torch.tensor(POLICY_RATE_SCALE[0:2], device=self.device)
@@ -439,8 +466,13 @@ class DronePX4Env(DirectRLEnv):
         gyro_flu = self.drone.data.root_ang_vel_b
         gyro_frd = gyro_flu * torch.tensor([1.0, -1.0, -1.0], device=self.device)
         landed = self._height() < 0.02
-        rate_sp = self._attitude_to_rates(sp[:, 1:4]) if self.cfg.action_mode == "attitude" else sp[:, 1:4]
-        self.motor_cmd = self.px4.step(sp[:, 0], rate_sp, gyro_frd, landed)
+        if self.cfg.action_mode == "velocity":
+            thrust_sp, att_sp = self._velocity_to_attitude(sp, landed)
+            rate_sp = self._attitude_to_rates(att_sp)
+        else:
+            thrust_sp = sp[:, 0]
+            rate_sp = self._attitude_to_rates(sp[:, 1:4]) if self.cfg.action_mode == "attitude" else sp[:, 1:4]
+        self.motor_cmd = self.px4.step(thrust_sp, rate_sp, gyro_frd, landed)
 
         alpha = (self.physics_dt / (self.motor_tau + self.physics_dt)).unsqueeze(-1)
         self.motor_speed += alpha * (self.motor_cmd - self.motor_speed)
@@ -576,6 +608,8 @@ class DronePX4Env(DirectRLEnv):
         pos_err[:, 2] = self.target_z - self._height()
         critic = torch.cat([sensors, pos_err, d.root_lin_vel_w], dim=-1)
         policy = sensors
+        if self.cfg.obs_pi16:
+            return {"policy": self._pi16_obs(pos_err), "critic": critic}
         if self.cfg.obs_history:
             tof = sensors[:, 0:4]
             fresh = self.episode_length_buf == 0   # new episode: no motion yet, not the last episode's
@@ -594,6 +628,19 @@ class DronePX4Env(DirectRLEnv):
                 self.oracle_gap_n += 1
                 policy = torch.cat([policy, est], dim=-1)
         return {"policy": policy, "critic": critic}
+
+    def _pi16_obs(self, pos_err):
+        """The Duckiedrone Pi node's 16 inputs (see obs_pi16), from ground truth."""
+        d = self.drone.data
+        w, x, y, z = d.root_quat_w.unbind(-1)
+        roll = torch.atan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y))
+        pitch = torch.asin((2 * (w * y - z * x)).clamp(-1.0, 1.0))
+        yaw = torch.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
+        cy, sy = torch.cos(yaw), torch.sin(yaw)
+        head = lambda v: torch.stack([cy * v[:, 0] + sy * v[:, 1], -sy * v[:, 0] + cy * v[:, 1], v[:, 2]], -1)  # noqa: E731
+        yaw_err = torch.atan2(torch.sin(-yaw), torch.cos(-yaw))
+        return torch.cat([head(pos_err), head(d.root_lin_vel_w), roll.unsqueeze(-1), pitch.unsqueeze(-1),
+                          yaw_err.unsqueeze(-1), d.root_ang_vel_b, self.prev_action], -1)
 
     def _estimate_wallmap(self, sensors):
         """Oracle-shaped estimate from a box wall map (walls at +-room_half_width_m, floor at 0):
@@ -732,6 +779,33 @@ class DronePX4Env(DirectRLEnv):
         r = torch.where(self.landed, land, r)
         return torch.where(self.sat, torch.full_like(r, c.field_sat_penalty), r)
 
+    def _velocity_to_attitude(self, sp, landed):
+        """PX4 velocity loop: [forward, left, up velocity (heading frame), yaw rate CCW] ->
+        collective thrust and [roll, pitch (FRD, rad), yaw rate (FRD)] for _attitude_to_rates.
+        Thrust = hover thrust x |acceleration + g| / g (PX4 with MPC_THR_HOVER at the logged hover)."""
+        c, d = self.cfg, self.drone.data
+        w, x, y, z = d.root_quat_w.unbind(-1)
+        yaw = torch.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
+        cy, sy = torch.cos(yaw), torch.sin(yaw)
+        v_sp = torch.stack([cy * sp[:, 0] - sy * sp[:, 1], sy * sp[:, 0] + cy * sp[:, 1], sp[:, 2]], -1)
+        err = v_sp - d.root_lin_vel_w
+        idle = landed & (sp[:, 2] <= 0.05)            # PX4 stays on the ground until asked to climb
+        self.vel_int = torch.where(idle.unsqueeze(-1), torch.zeros_like(self.vel_int),
+                                   (self.vel_int + err * self.physics_dt).clamp(-c.mpc_vel_int_max, c.mpc_vel_int_max))
+        pid = torch.tensor([c.mpc_xy_vel_pid, c.mpc_xy_vel_pid, c.mpc_z_vel_pid], device=self.device)   # (3 axes, P I D)
+        acc = d.body_lin_acc_w[:, self.body_id[0]]
+        f = pid[:, 0] * err + pid[:, 1] * self.vel_int - pid[:, 2] * acc + torch.tensor([0.0, 0.0, 9.81], device=self.device)
+        f_z = f[:, 2].clamp(min=0.1 * 9.81)
+        horiz = f[:, 0:2]
+        lim = f_z * math.tan(c.mpc_tilt_max_rad)
+        horiz = horiz * (lim / horiz.norm(dim=-1).clamp(min=1e-6)).clamp(max=1.0).unsqueeze(-1)
+        thrust = (POLICY_HOVER_THRUST * torch.sqrt(horiz.pow(2).sum(-1) + f_z * f_z) / 9.81).clamp(0.0, 1.0)
+        thrust = torch.where(idle, torch.zeros_like(thrust), thrust)
+        fwd, left = cy * horiz[:, 0] + sy * horiz[:, 1], -sy * horiz[:, 0] + cy * horiz[:, 1]
+        pitch_flu = torch.atan2(fwd, f_z)                                  # + tilts thrust forward
+        roll_flu = -torch.atan2(left, torch.sqrt(fwd * fwd + f_z * f_z))   # - tilts thrust left
+        return thrust, torch.stack([roll_flu, -pitch_flu, -sp[:, 3]], -1)  # FRD roll, pitch, yaw rate
+
     def _attitude_to_rates(self, sp):
         """PX4 attitude P loop: [roll, pitch (FRD, rad), yaw rate (FRD)] -> FRD rate setpoint.
         Yaw setpoint = current yaw, so only roll / pitch are controlled as angles."""
@@ -801,6 +875,8 @@ class DronePX4Env(DirectRLEnv):
             dev = self.device
             self.px4.reset(env_ids)
             self.ctbr[env_ids] = 0.0
+            self.vel_int[env_ids] = 0.0
+            self.prev_action[env_ids] = 0.0
             self.motor_cmd[env_ids] = 0.0
             self.motor_speed[env_ids] = 0.0
             self.prev_vel[env_ids] = 0.0

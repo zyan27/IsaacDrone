@@ -23,6 +23,7 @@ parser.add_argument("--save_path", type=str, default="checkpoints/px4_hover.pt")
 parser.add_argument("--init_checkpoint", type=str, default=None, help="start the actor (and its noise) from this checkpoint; the critic starts fresh")
 parser.add_argument("--reward", choices=["hover", "field"], default="hover", help="field: the smooth 3D field reward (see DronePX4EnvCfg)")
 parser.add_argument("--deterministic", action="store_true", help="no randomisation (bitwise_improvement/deterministic.py)")
+parser.add_argument("--obs_pi16", action="store_true", help="the Duckiedrone Pi node's 16 inputs (use with --action velocity; tanh actor)")
 parser.add_argument("--real_imu_noise", action="store_true", help="IMU noise = in-flight vibration from the real logs (applied after --deterministic)")
 parser.add_argument("--obs_history", type=int, default=0, help="past steps of ToF readings in the policy observation (must match training)")
 parser.add_argument("--obs_estimator", action="store_true", help="add the ToF+IMU filter estimates to the policy observation (must match training)")
@@ -31,7 +32,7 @@ parser.add_argument("--oracle_source", choices=["true", "estimate", "wallmap"], 
 parser.add_argument("--seed", type=int, default=0, help="seeds torch, the env and the network init, so runs differ only in what you change")
 parser.add_argument("--yaw_hold", action="store_true", help="attitude mode: PX4 holds heading 0 (must match training)")
 parser.add_argument("--box_pow", type=float, default=1.0, help="field reward: box term (1+N)^-box_pow")
-parser.add_argument("--action", choices=["rates", "attitude"], default="rates", help="attitude: roll/pitch outputs are attitude setpoints")
+parser.add_argument("--action", choices=["rates", "attitude", "velocity"], default="rates", help="attitude: roll/pitch outputs are attitude setpoints")
 parser.add_argument("--thrust_bias", type=float, default=0.0, help="initial actor bias on the thrust output (0.1 ~ 5%% above hover: the first policies climb)")
 parser.add_argument("--critic_warmup", type=int, default=20, help="with --init_checkpoint: iterations that train only the critic")
 
@@ -56,7 +57,7 @@ def main():
     cfg.action_mode = args.action
     cfg.att_yaw_hold = args.yaw_hold
     cfg.field_box_pow = args.box_pow
-    set_policy_obs(cfg, args.obs_history, args.obs_estimator, args.obs_oracle, args.oracle_source)
+    set_policy_obs(cfg, args.obs_history, args.obs_estimator, args.obs_oracle, args.oracle_source, args.obs_pi16)
     cfg.seed = args.seed
     torch.manual_seed(args.seed)
     if args.deterministic:
@@ -69,7 +70,7 @@ def main():
     obs_dim, state_dim = cfg.observation_space, cfg.state_space
 
     torch.manual_seed(args.seed)   # same initial weights and sampling for the same seed, whatever the env drew
-    actor = PX4Actor(obs_dim).to(dev)
+    actor = PX4Actor(obs_dim, act="tanh" if args.obs_pi16 else "elu").to(dev)
     # Start near a zero action (hover thrust, zero rates) instead of a random thrash.
     with torch.no_grad():
         actor.net[-1].weight.mul_(0.01)
@@ -181,7 +182,7 @@ def main():
             best = ep_return
             os.makedirs(os.path.dirname(args.save_path) or ".", exist_ok=True)
             torch.save({"actor": actor.state_dict(), "critic": critic.state_dict(),
-                        "log_std": log_std.detach().cpu(), "best_ep_return": best, "iter": it}, args.save_path + ".tmp")
+                        "log_std": log_std.detach().cpu(), "best_ep_return": best, "iter": it, "act": actor.act}, args.save_path + ".tmp")
             os.replace(args.save_path + ".tmp", args.save_path)  # oscar/snapshot.sh may read it mid-training
             print(f"saved best episode return {best:.1f}")
 

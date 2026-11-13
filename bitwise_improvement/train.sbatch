@@ -28,22 +28,24 @@ OBS_EXTRA="${OBS_EXTRA:-}"   # --obs_estimator, --obs_oracle [--oracle_source es
 SEED="${SEED:-0}"
 TRAIN_EXTRA="${TRAIN_EXTRA:-}"   # training-only flags, e.g. --box_pow 0.5, --init_checkpoint X.pt
 SIM_EXTRA="${SIM_EXTRA:-}"       # world flags for training and the video, e.g. --real_imu_noise
+DET="${DET---deterministic}"     # DET= (empty): every randomisation on
+EXPORT="${EXPORT:-deploy/export_policy.py}"   # deploy/export_pi16.py for --obs_pi16 policies
 B=bitwise_improvement
 cd "$REPO_DIR"
 mkdir -p $B/logs $B/checkpoints $B/videos
 RUNS_ROOT=$B/runs source oscar/run_record.sh
-echo "reward field, deterministic, action $ACTION, thrust_bias $THRUST_BIAS, obs_history $OBS_HISTORY $OBS_EXTRA, seed $SEED $TRAIN_EXTRA $SIM_EXTRA" >> "$RUN_DIR/git.txt"
+echo "reward field, ${DET:-randomised}, action $ACTION, thrust_bias $THRUST_BIAS, obs_history $OBS_HISTORY $OBS_EXTRA, seed $SEED $TRAIN_EXTRA $SIM_EXTRA" >> "$RUN_DIR/git.txt"
 
 echo "== 1/3 train $(date)"
-bash oscar/run_isaac.sh train_rl_px4.py --headless --deterministic --reward field --action "$ACTION" --thrust_bias "$THRUST_BIAS" --obs_history "$OBS_HISTORY" $OBS_EXTRA --seed "$SEED" $TRAIN_EXTRA $SIM_EXTRA \
+bash oscar/run_isaac.sh train_rl_px4.py --headless $DET --reward field --action "$ACTION" --thrust_bias "$THRUST_BIAS" --obs_history "$OBS_HISTORY" $OBS_EXTRA --seed "$SEED" $TRAIN_EXTRA $SIM_EXTRA \
     --num_envs "$NUM_ENVS" --iters "$ITERS" --steps 32 --save_path $B/checkpoints/$NAME.pt
 
 echo "== 2/3 policy video $(date)"
-bash oscar/run_isaac.sh play_px4.py --headless --enable_cameras --deterministic --action "$ACTION" --obs_history "$OBS_HISTORY" $OBS_EXTRA --seed "$SEED" $SIM_EXTRA --seconds 15 --hold 20 \
+bash oscar/run_isaac.sh play_px4.py --headless --enable_cameras $DET --action "$ACTION" --obs_history "$OBS_HISTORY" $OBS_EXTRA --seed "$SEED" $SIM_EXTRA --seconds 15 --hold 20 \
     --checkpoint $B/checkpoints/$NAME.pt --out $B/videos/$NAME.mp4
 
 echo "== 3/3 export $(date)"
-bash oscar/run_isaac.sh deploy/export_policy.py $B/checkpoints/$NAME.pt $B/$NAME.npz
+bash oscar/run_isaac.sh $EXPORT $B/checkpoints/$NAME.pt $B/$NAME.npz
 
 record_finish $B/checkpoints/$NAME.pt $B/videos/$NAME.mp4 $B/videos/$NAME.csv $B/$NAME.npz
 [ -n "${SLURM_JOB_ID:-}" ] && cp -p $B/logs/*_"$SLURM_JOB_ID".out "$RUN_DIR/" 2>/dev/null || true
