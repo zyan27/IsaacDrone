@@ -23,6 +23,7 @@ parser.add_argument("--save_path", type=str, default="checkpoints/px4_hover.pt")
 parser.add_argument("--init_checkpoint", type=str, default=None, help="start the actor (and its noise) from this checkpoint; the critic starts fresh")
 parser.add_argument("--reward", choices=["hover", "field"], default="hover", help="field: the smooth 3D field reward (see DronePX4EnvCfg)")
 parser.add_argument("--deterministic", action="store_true", help="no randomisation (bitwise_improvement/deterministic.py)")
+parser.add_argument("--real_imu_noise", action="store_true", help="IMU noise = in-flight vibration from the real logs (applied after --deterministic)")
 parser.add_argument("--obs_history", type=int, default=0, help="past steps of ToF readings in the policy observation (must match training)")
 parser.add_argument("--obs_estimator", action="store_true", help="add the ToF+IMU filter estimates to the policy observation (must match training)")
 parser.add_argument("--obs_oracle", action="store_true", help="add true position error + velocity to the policy observation (sim only)")
@@ -45,7 +46,7 @@ import torch.nn as nn
 import torch.optim as optim
 
 from controllers.px4_policy import PX4Actor, mlp
-from environments.drone_px4_env import DronePX4Env, DronePX4EnvCfg, policy_to_ctbr, set_policy_obs
+from environments.drone_px4_env import DronePX4Env, DronePX4EnvCfg, policy_to_ctbr, set_policy_obs, set_real_imu_noise
 
 
 def main():
@@ -61,6 +62,8 @@ def main():
     if args.deterministic:
         from bitwise_improvement.deterministic import make_deterministic
         make_deterministic(cfg)
+    if args.real_imu_noise:
+        set_real_imu_noise(cfg)
     env = DronePX4Env(cfg=cfg, render_mode=None)
     dev = env.device
     obs_dim, state_dim = cfg.observation_space, cfg.state_space

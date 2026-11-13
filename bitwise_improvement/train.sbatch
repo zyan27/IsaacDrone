@@ -26,19 +26,20 @@ THRUST_BIAS="${THRUST_BIAS:-0.1}"
 OBS_HISTORY="${OBS_HISTORY:-0}"
 OBS_EXTRA="${OBS_EXTRA:-}"   # --obs_estimator, --obs_oracle [--oracle_source estimate]
 SEED="${SEED:-0}"
-TRAIN_EXTRA="${TRAIN_EXTRA:-}"   # training-only flags, e.g. --box_pow 0.5
+TRAIN_EXTRA="${TRAIN_EXTRA:-}"   # training-only flags, e.g. --box_pow 0.5, --init_checkpoint X.pt
+SIM_EXTRA="${SIM_EXTRA:-}"       # world flags for training and the video, e.g. --real_imu_noise
 B=bitwise_improvement
 cd "$REPO_DIR"
 mkdir -p $B/logs $B/checkpoints $B/videos
 RUNS_ROOT=$B/runs source oscar/run_record.sh
-echo "reward field, deterministic, action $ACTION, thrust_bias $THRUST_BIAS, obs_history $OBS_HISTORY $OBS_EXTRA, seed $SEED $TRAIN_EXTRA" >> "$RUN_DIR/git.txt"
+echo "reward field, deterministic, action $ACTION, thrust_bias $THRUST_BIAS, obs_history $OBS_HISTORY $OBS_EXTRA, seed $SEED $TRAIN_EXTRA $SIM_EXTRA" >> "$RUN_DIR/git.txt"
 
 echo "== 1/3 train $(date)"
-bash oscar/run_isaac.sh train_rl_px4.py --headless --deterministic --reward field --action "$ACTION" --thrust_bias "$THRUST_BIAS" --obs_history "$OBS_HISTORY" $OBS_EXTRA --seed "$SEED" $TRAIN_EXTRA \
+bash oscar/run_isaac.sh train_rl_px4.py --headless --deterministic --reward field --action "$ACTION" --thrust_bias "$THRUST_BIAS" --obs_history "$OBS_HISTORY" $OBS_EXTRA --seed "$SEED" $TRAIN_EXTRA $SIM_EXTRA \
     --num_envs "$NUM_ENVS" --iters "$ITERS" --steps 32 --save_path $B/checkpoints/$NAME.pt
 
 echo "== 2/3 policy video $(date)"
-bash oscar/run_isaac.sh play_px4.py --headless --enable_cameras --deterministic --action "$ACTION" --obs_history "$OBS_HISTORY" $OBS_EXTRA --seed "$SEED" --seconds 15 --hold 20 \
+bash oscar/run_isaac.sh play_px4.py --headless --enable_cameras --deterministic --action "$ACTION" --obs_history "$OBS_HISTORY" $OBS_EXTRA --seed "$SEED" $SIM_EXTRA --seconds 15 --hold 20 \
     --checkpoint $B/checkpoints/$NAME.pt --out $B/videos/$NAME.mp4
 
 echo "== 3/3 export $(date)"

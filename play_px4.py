@@ -27,6 +27,7 @@ parser.add_argument("--wait", type=float, default=1.0, help="seconds on the floo
 parser.add_argument("--hold", type=float, default=6.0, help="seconds at the hold height")
 parser.add_argument("--out", type=str, default="videos/px4_dd24.mp4")
 parser.add_argument("--deterministic", action="store_true", help="no randomisation (bitwise_improvement/deterministic.py)")
+parser.add_argument("--real_imu_noise", action="store_true", help="IMU noise = in-flight vibration from the real logs (applied after --deterministic)")
 parser.add_argument("--obs_history", type=int, default=0, help="past steps of ToF readings in the policy observation (must match training)")
 parser.add_argument("--obs_estimator", action="store_true", help="add the ToF+IMU filter estimates to the policy observation (must match training)")
 parser.add_argument("--obs_oracle", action="store_true", help="add true position error + velocity to the policy observation (sim only)")
@@ -50,7 +51,7 @@ import torch
 from isaaclab.utils.math import euler_xyz_from_quat, wrap_to_pi
 
 from controllers.px4_policy import PX4Actor
-from environments.drone_px4_env import POLICY_HOVER_THRUST, DronePX4Env, DronePX4EnvCfg, policy_to_ctbr, set_policy_obs
+from environments.drone_px4_env import POLICY_HOVER_THRUST, DronePX4Env, DronePX4EnvCfg, policy_to_ctbr, set_policy_obs, set_real_imu_noise
 from sim_px4.px4_defaults import ATT
 from visualization import Hud, make_target_markers, show_targets
 
@@ -110,6 +111,8 @@ def main():
         from bitwise_improvement.deterministic import make_deterministic
         make_deterministic(cfg)
     cfg.wall_rough, cfg.net_noise = args.wall_rough, args.net_noise   # after: these are the test
+    if args.real_imu_noise:
+        set_real_imu_noise(cfg)
     # Camera in a corner of the enclosure, looking across it at the target.
     cfg.viewer.eye = (0.9, 0.9, 1.0)
     cfg.viewer.lookat = (0.0, 0.0, 0.35)

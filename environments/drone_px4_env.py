@@ -72,6 +72,12 @@ def policy_to_ctbr(a: torch.Tensor, hover_cmd: float = POLICY_HOVER_THRUST) -> t
     return torch.cat([thrust, rates], dim=-1)
 
 
+def set_real_imu_noise(cfg):
+    """IMU noise as measured in flight on the real DD24 (vibration), instead of the bench values."""
+    cfg.gyro_noise_rps, cfg.accel_noise_mps2 = cfg.real_gyro_noise_rps, cfg.real_accel_noise_mps2
+    return cfg
+
+
 def set_policy_obs(cfg, history: int = 0, estimator: bool = False, oracle: bool = False, oracle_source: str = "true"):
     """Extra policy inputs (DronePX4EnvCfg.obs_history / obs_estimator / obs_oracle) and the
     observation size that goes with them: 24 + 4 history + 8 estimator + 6 oracle."""
@@ -191,6 +197,9 @@ class DronePX4EnvCfg(DirectRLEnvCfg):
     att_noise_rad = 0.01
     gyro_noise_rps = 0.003
     accel_noise_mps2 = 0.05
+    # In flight (10-25 logs, per 50 Hz sample, FRD x / y / z): prop vibration, white. set_real_imu_noise.
+    real_gyro_noise_rps = (0.06, 0.10, 0.02)
+    real_accel_noise_mps2 = (1.0, 1.0, 2.7)
 
     # Sensor timing, per stream, drawn per episode (logs: ToF 17-20 Hz, IMU ~50 Hz,
     # ~0.2 IMU gaps/s of up to 1 s).
@@ -500,7 +509,7 @@ class DronePX4Env(DirectRLEnv):
         """What the DD24 measures, every physics step: 4 ToF, IMU attitude/gyro/accel.
         The IMU is mounted tilted by imu_mis relative to the thrust axis."""
         d, n, dev = self.drone.data, self.num_envs, self.device
-        noise = lambda k, sigma: sigma * torch.randn(n, k, device=dev)  # noqa: E731
+        noise = lambda k, sigma: torch.as_tensor(sigma, device=dev) * torch.randn(n, k, device=dev)  # noqa: E731  (sigma: scalar or per axis)
         tof = self._tof_ranges()
         dq = torch.cat([torch.ones(n, 1, device=dev), 0.5 * noise(3, self.cfg.att_noise_rad)], dim=-1)
         quat = quat_mul(quat_mul(d.root_quat_w, self.imu_mis), dq / dq.norm(dim=-1, keepdim=True))
