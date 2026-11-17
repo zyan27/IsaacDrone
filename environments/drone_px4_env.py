@@ -172,6 +172,11 @@ class DronePX4EnvCfg(DirectRLEnvCfg):
     field_land_penalty = -1500.0
     field_sat_penalty = -4500.0
     field_crash_penalty = -3000.0
+    # obs_pi16 / pi_settle: the calm term also wants heading 0 and zero commands, so the policy's
+    # rest point is "all inputs 0 -> all outputs 0" (without these, yaw was free and it rested at
+    # a 43 deg heading with 0.2-0.8 commands at zero inputs).
+    field_k_yaw = 0.0         # rad^-2
+    field_k_act = 0.0         # on |a|^2, a = raw outputs in [-1, 1]
     spawn_air_prob = 0.0      # share of episodes that start hovering at the target (off: always take off from the floor)
 
     # Sensor model (1-sigma). Down ToF: VL53L1X, reads ~0 on the floor, ~1.5 mm
@@ -765,6 +770,10 @@ class DronePX4Env(DirectRLEnv):
         d = torch.stack([lim - pos[:, 0], lim + pos[:, 0], lim - pos[:, 1], lim + pos[:, 1], h, c.ceiling_m - h], -1)
         walls = (1.0 - torch.exp(-d.clamp(min=0.0) / c.field_wall_scale_m)).prod(-1)
         calm = torch.exp(-c.field_k_v * vel.pow(2).sum(-1) - c.field_k_a * acc.pow(2).sum(-1))
+        if c.field_k_yaw > 0.0 or c.field_k_act > 0.0:
+            w, x, y, z = self.drone.data.root_quat_w.unbind(-1)
+            yaw = torch.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
+            calm = calm * torch.exp(-c.field_k_yaw * yaw.pow(2) - c.field_k_act * self.prev_action.pow(2).sum(-1))
         r = 1.0 + 2.0 * box * walls * calm
         cmd = self.target_z > 0.0
         on_floor = h < c.floor_height_m

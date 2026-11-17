@@ -8,6 +8,7 @@ Unlike train_rl_hover.py, finished envs are left to the env's own auto-reset, so
 one crash doesn't restart every drone.
 """
 import argparse
+import math
 import os
 import time
 
@@ -24,6 +25,7 @@ parser.add_argument("--init_checkpoint", type=str, default=None, help="start the
 parser.add_argument("--reward", choices=["hover", "field"], default="hover", help="field: the smooth 3D field reward (see DronePX4EnvCfg)")
 parser.add_argument("--deterministic", action="store_true", help="no randomisation (bitwise_improvement/deterministic.py)")
 parser.add_argument("--obs_pi16", action="store_true", help="the Duckiedrone Pi node's 16 inputs (use with --action velocity; tanh actor)")
+parser.add_argument("--pi_settle", action="store_true", help="after --deterministic: random heading (+-pi) and spawn (+-0.3 m), reward heading 0 and zero commands (the Pi policy's rest point)")
 parser.add_argument("--real_imu_noise", action="store_true", help="IMU noise = in-flight vibration from the real logs (applied after --deterministic)")
 parser.add_argument("--obs_history", type=int, default=0, help="past steps of ToF readings in the policy observation (must match training)")
 parser.add_argument("--obs_estimator", action="store_true", help="add the ToF+IMU filter estimates to the policy observation (must match training)")
@@ -63,6 +65,8 @@ def main():
     if args.deterministic:
         from bitwise_improvement.deterministic import make_deterministic
         make_deterministic(cfg)
+    if args.pi_settle:
+        cfg.spawn_yaw_rad, cfg.spawn_xy_range_m, cfg.field_k_yaw, cfg.field_k_act = math.pi, 0.3, 1.0, 0.5
     if args.real_imu_noise:
         set_real_imu_noise(cfg)
     env = DronePX4Env(cfg=cfg, render_mode=None)

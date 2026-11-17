@@ -28,6 +28,7 @@ parser.add_argument("--hold", type=float, default=6.0, help="seconds at the hold
 parser.add_argument("--out", type=str, default="videos/px4_dd24.mp4")
 parser.add_argument("--deterministic", action="store_true", help="no randomisation (bitwise_improvement/deterministic.py)")
 parser.add_argument("--obs_pi16", action="store_true", help="the Duckiedrone Pi node's 16 inputs (use with --action velocity; tanh actor)")
+parser.add_argument("--pi_settle", action="store_true", help="after --deterministic: random heading (+-pi) and spawn (+-0.3 m), reward heading 0 and zero commands (the Pi policy's rest point)")
 parser.add_argument("--real_imu_noise", action="store_true", help="IMU noise = in-flight vibration from the real logs (applied after --deterministic)")
 parser.add_argument("--obs_history", type=int, default=0, help="past steps of ToF readings in the policy observation (must match training)")
 parser.add_argument("--obs_estimator", action="store_true", help="add the ToF+IMU filter estimates to the policy observation (must match training)")
@@ -112,6 +113,8 @@ def main():
         from bitwise_improvement.deterministic import make_deterministic
         make_deterministic(cfg)
     cfg.wall_rough, cfg.net_noise = args.wall_rough, args.net_noise   # after: these are the test
+    if args.pi_settle:
+        cfg.spawn_yaw_rad, cfg.spawn_xy_range_m, cfg.field_k_yaw, cfg.field_k_act = math.pi, 0.3, 1.0, 0.5
     if args.real_imu_noise:
         set_real_imu_noise(cfg)
     # Camera in a corner of the enclosure, looking across it at the target.

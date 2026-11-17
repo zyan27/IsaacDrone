@@ -59,6 +59,9 @@ def main():
     cfg.obs_mode = ck.get("obs_mode", "privileged")
     # Checkpoints from before thrust/body-rate control commanded motors directly.
     cfg.control_mode = ck.get("control_mode", "motors")
+    cfg.ctbr_thrust_center = ck.get("ctbr_thrust_center", cfg.ctbr_thrust_center)
+    cfg.ctbr_thrust_span = ck.get("ctbr_thrust_span", cfg.ctbr_thrust_span)
+    cfg.thrust_curve_k_range = tuple(ck.get("thrust_curve_k_range", cfg.thrust_curve_k_range))
     cfg.obs_history = ck.get("obs_history", cfg.obs_history)
     if args.net_dropout is not None:
         cfg.tof_net_dropout_range = (args.net_dropout, args.net_dropout)
