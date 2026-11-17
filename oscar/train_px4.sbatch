@@ -38,7 +38,7 @@ bash oscar/run_isaac.sh play_px4.py --headless --enable_cameras --seconds 15 --h
     --checkpoint checkpoints/px4_hold.pt --out videos/px4_policy_hold.mp4
 
 echo "== 4/4 export $(date)"
-bash oscar/run_isaac.sh deploy/export_policy.py checkpoints/px4_hold.pt deploy/policy.npz
+bash oscar/run_isaac.sh deploy/export_px4_policy.py checkpoints/px4_hold.pt deploy/policy.npz
 
 record_finish checkpoints/px4_hold.pt videos/px4_policy_hold.mp4 videos/px4_scripted_hold.mp4 deploy/policy.npz
 echo "done $(date) -> $REPO_DIR/videos/px4_policy_hold.mp4, $REPO_DIR/deploy/policy.npz"

@@ -18,8 +18,8 @@
 set -euo pipefail
 
 # --- EDIT THESE ---
-ISAAC_SIM_TAG="5.0.0"                        # confirm vs repo
-SIF_DIR="${SIF_DIR:-$HOME/scratch/isaac}"    # scratch, NOT home (image is ~10+ GB)
+ISAAC_SIM_TAG="${ISAAC_SIM_TAG:-5.0.0}"     # Isaac Sim 5.0 <-> Isaac Lab v2.2.x
+SIF_DIR="${SIF_DIR:-$(readlink -f $HOME/scratch)/isaac}"    # scratch, NOT home (image is ~10+ GB)
 # ------------------
 
 # apptainer's layer cache + build tmp default to ~/.apptainer and /tmp; keep the

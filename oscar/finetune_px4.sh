@@ -36,7 +36,7 @@ bash oscar/run_isaac.sh play_px4.py --headless --enable_cameras --seconds 15 --h
     --checkpoint "checkpoints/$NAME.pt" --out "videos/${NAME}.mp4"
 
 echo "== 3/3 export $(date)"
-bash oscar/run_isaac.sh deploy/export_policy.py "checkpoints/$NAME.pt" "deploy/${NAME}.npz"
+bash oscar/run_isaac.sh deploy/export_px4_policy.py "checkpoints/$NAME.pt" "deploy/${NAME}.npz"
 
 record_finish "checkpoints/$NAME.pt" "videos/${NAME}.mp4" "deploy/${NAME}.npz"
 echo "done $(date) -> $REPO_DIR/videos/${NAME}.mp4, $REPO_DIR/deploy/${NAME}.npz"

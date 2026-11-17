@@ -26,7 +26,7 @@ cd "$REPO_DIR"
 mkdir -p $B/logs $B/videos
 
 echo "== export $(date)"
-bash oscar/run_isaac.sh deploy/export_policy.py "$CKPT" "$NPZ" attitude
+bash oscar/run_isaac.sh deploy/export_px4_policy.py "$CKPT" "$NPZ" attitude
 
 echo "== replay real logs $(date)"
 LOGS=$B/replay_logs_$SLURM_JOB_ID   # inside the repo: the container binds it (34 MB, removed below)

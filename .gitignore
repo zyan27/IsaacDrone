@@ -9,3 +9,5 @@ tensorboard/
 # generated rollout plots
 hover_*.png
 last_rollout.png
+oscar/logs/*
+!oscar/logs/.keep

@@ -1,0 +1,4 @@
+# Built artifacts
+*.usd
+*.usda
+configuration/

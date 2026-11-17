@@ -29,7 +29,7 @@ SEED="${SEED:-0}"
 TRAIN_EXTRA="${TRAIN_EXTRA:-}"   # training-only flags, e.g. --box_pow 0.5, --init_checkpoint X.pt
 SIM_EXTRA="${SIM_EXTRA:-}"       # world flags for training and the video, e.g. --real_imu_noise
 DET="${DET---deterministic}"     # DET= (empty): every randomisation on
-EXPORT="${EXPORT:-deploy/export_policy.py}"   # deploy/export_pi16.py for --obs_pi16 policies
+EXPORT="${EXPORT:-deploy/export_px4_policy.py}"   # deploy/export_pi16.py for --obs_pi16 policies
 B=bitwise_improvement
 cd "$REPO_DIR"
 mkdir -p $B/logs $B/checkpoints $B/videos
