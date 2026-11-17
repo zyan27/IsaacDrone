@@ -2,3 +2,6 @@
 *.usd
 *.usda
 configuration/
+.asset_hash
+config.yaml
+dd24.usd.ok

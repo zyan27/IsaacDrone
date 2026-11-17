@@ -3,6 +3,7 @@
 #     bash oscar/snapshot.sh                          # checkpoints/px4_hold.pt
 #     bash oscar/snapshot.sh checkpoints/other.pt     # another checkpoint
 #     JOB=7978456 bash oscar/snapshot.sh              # a specific job
+#     PLAY_EXTRA="--action velocity --obs_pi16" bash oscar/snapshot.sh X.pt   # flags the policy was trained with
 # Training only writes that file when an iteration beats the best episode return so
 # far, so it always holds the highest-reward policy (its iter and return are printed).
 # Runs play_px4.py inside your newest running GPU job (batch or interactive), on the
@@ -24,5 +25,5 @@ echo "job $JOB: $CKPT -> $OUT"
 
 srun --jobid="$JOB" --overlap -n 1 -c 2 --mem=0 --gres=gpu:1 \
     bash oscar/run_isaac.sh play_px4.py --headless --enable_cameras --seconds 15 --hold 20 \
-    --checkpoint "$SNAP" --out "$OUT" 2>&1 | grep -E "^policy from|^t=|RESET|wrote|Error|error"
+    ${PLAY_EXTRA:-} --checkpoint "$SNAP" --out "$OUT" 2>&1 | grep -E "^policy from|^t=|RESET|wrote|Error|error"
 echo "video: $REPO_DIR/$OUT"
