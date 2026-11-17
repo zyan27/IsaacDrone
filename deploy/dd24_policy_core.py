@@ -127,6 +127,24 @@ class SafetyCfg:
 
 
 @dataclass
+class TakeoffCfg:
+    """Scripted takeoff from the floor before the policy takes over (the policy was trained
+    from mid-air starts). Level hold: body rates = -att_kp * (roll, pitch) (PX4's attitude P
+    loop, done here so the setpoint stays thrust + body rates). Height: PID on the down ToF
+    (tilt-corrected) tracking a ramp at climb_rate; hand-over to the policy at handover_m."""
+    enabled: bool = True
+    handover_m: float = 0.5
+    climb_rate: float = 0.3           # m/s
+    att_kp: float = 6.0               # (rad/s) per rad, PX4 MC_ROLL_P default 6.5
+    kp: float = 0.10                  # thrust per m of height error
+    kd: float = 0.08                  # thrust per m/s of climb-rate error
+    ki: float = 0.08                  # thrust per m*s
+    thrust_min: float = 0.25
+    thrust_max: float = 0.75
+    timeout_s: float = 8.0            # not at handover height by then -> STOP (PX4 failsafe)
+
+
+@dataclass
 class Tick:
     mode: str                         # RUN | NEUTRAL | STOP | WAIT
     reason: str
@@ -139,7 +157,7 @@ class Tick:
 
 class Core:
     def __init__(self, policy: Policy, target_height: float, flow_cfg: FlowCfg | None = None,
-                 safety: SafetyCfg | None = None):
+                 safety: SafetyCfg | None = None, takeoff: TakeoffCfg | None = None):
         m = policy.meta
         self.p, self.m = policy, m
         self.target_height = float(target_height)
@@ -156,6 +174,9 @@ class Core:
         self.flow = None                    # (t, vx, vy, valid)
         self.active = False
         self.disabled = set()               # ToFs switched off (e.g. view blocked): always "no target"
+        self.takeoff = takeoff or TakeoffCfg(enabled=False)
+        self.phase = "policy"               # "takeoff" until the hand-over height, then "policy"
+        self.to = {}                        # takeoff state
 
     # ---- message inputs
     def on_imu(self, t, accel, gyro, quat_xyzw):
@@ -231,6 +252,11 @@ class Core:
             self.cmd = np.zeros(4)
             self.hist.clear()
             self.active = True
+            tc = self.takeoff
+            self.phase = "takeoff" if tc.enabled and h < tc.handover_m - 0.05 else "policy"
+            self.to = {"t0": t, "t": t, "h_ref": h, "h": h, "vz": 0.0, "i": 0.0}
+        if self.phase == "takeoff":
+            return self.takeoff_tick(t, g, warn)
         if age_imu > s.imu_neutral_s or age_down > s.tof_down_neutral_s:
             self.cmd = np.zeros(4)
             thr, rates = self.neutral()
@@ -249,6 +275,33 @@ class Core:
         thrust = float(np.clip((c + self.cmd[0] * span) * s.thrust_gain, 0.0, 1.0))
         rates = self.cmd[1:4] * self.max_rates
         return Tick("RUN", "", self.cmd.copy(), thrust, rates, frame, warn)
+
+    def takeoff_tick(self, t, g, warn) -> Tick:
+        tc, s = self.takeoff, self.to
+        if t - s["t0"] > tc.timeout_s:
+            self.active = False
+            return Tick("STOP", f"takeoff: not at {tc.handover_m:.2f} m after {tc.timeout_s:.0f} s", self.cmd.copy())
+        dt = max(t - s["t"], 1e-3)
+        cos_t = max(-g[2], 0.5)
+        h = self.tof["down"][1] * cos_t                       # vertical height from the slanted ray
+        vz_raw = (h - s["h"]) / dt
+        s["vz"] += 0.3 * (vz_raw - s["vz"])                   # ToF updates at 20-30 Hz: smooth
+        s["h"], s["t"] = h, t
+        s["h_ref"] = min(s["h_ref"] + tc.climb_rate * dt, tc.handover_m + 0.1)
+        v_ref = tc.climb_rate if s["h_ref"] < tc.handover_m + 0.1 else 0.0
+        e = s["h_ref"] - h
+        s["i"] = float(np.clip(s["i"] + e * dt, -1.0, 1.0))
+        hover = self.m["ctbr_thrust_center"]
+        thrust = (hover + tc.kp * e + tc.kd * (v_ref - s["vz"]) + tc.ki * s["i"]) / cos_t
+        thrust = float(np.clip(thrust * self.safety.thrust_gain, tc.thrust_min, tc.thrust_max))
+        roll, pitch = (math.radians(a) for a in roll_pitch_deg(g))
+        rates = np.array([-tc.att_kp * roll, -tc.att_kp * pitch, 0.0])
+        if h >= tc.handover_m:                                # hand over: fresh policy episode
+            self.phase = "policy"
+            self.cmd = np.zeros(4)
+            self.hist.clear()
+        return Tick("TAKEOFF", f"h {h:.2f} ref {s['h_ref']:.2f} vz {s['vz']:+.2f}", self.cmd.copy(), thrust, rates,
+                    warnings=warn)
 
     def out_of_training_range(self, frame, z_lim=6.0):
         """Inputs far outside what training saw (|z| > z_lim on the newest frame):

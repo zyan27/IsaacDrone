@@ -240,6 +240,12 @@ class DroneHoverEnvCfg(DirectRLEnvCfg):
     net_margin = A.NET_MARGIN
     net_warn_band = A.NET_WARN_BAND
     max_tilt_rad = 1.2           # terminate if tilted beyond this (~70 deg)
+    # Take off from the floor: this fraction of episodes starts resting on the ground (no
+    # floor-crash until the drone has been above crash_height + 0.15 m; still on the floor
+    # after ground_timeout_s counts as a crash, so sitting there never pays).
+    ground_start_prob = 0.0
+    ground_rest_z = 0.0545       # body origin when resting (collision box 0.107 m tall)
+    ground_timeout_s = 4.0
     # Draw the net (0.5 m strand grid) and the hover target in the scene. Purely
     # visual, no collisions; only used for videos (record_video.py), off in training.
     show_net = False
@@ -402,6 +408,8 @@ class DroneHoverEnv(DirectRLEnv):
         self._cmd_px4 = torch.zeros(N, 4, device=self.device)
         # Thrust/body-rate command (a in [-1,1]^4) and the simulated PX4 below it.
         self._cmd = torch.zeros(N, 4, device=self.device)
+        self._ground_start = torch.zeros(N, dtype=torch.bool, device=self.device)
+        self._airborne = torch.zeros(N, dtype=torch.bool, device=self.device)
         self._cmd_prev = torch.zeros(N, 4, device=self.device)
         self._px4 = Px4RateController(N, self.device)
         self._max_rates = torch.tensor(self.cfg.ctbr_max_rates, device=self.device)
@@ -512,7 +520,7 @@ class DroneHoverEnv(DirectRLEnv):
             # One tick of the simulated PX4 rate controller (runs every physics step).
             thrust, rates = self.ctbr_setpoint(self._cmd_px4)
             gyro = self.drone.data.root_ang_vel_b + self._gyro_bias \
-                + torch.randn_like(self._gyro_bias) * self.cfg.gyro_noise_std
+                + torch.randn_like(self._gyro_bias) * torch.as_tensor(self.cfg.gyro_noise_std, device=self.device)
             frac = self._px4.step(rates, thrust, gyro, self.cfg.sim.dt)
             self.actions = self._px4.u_act          # motor commands, for logging / prop visuals
             self._set_wrench(frac * self.max_motor_thrust * self._thrust_scale)
@@ -636,10 +644,10 @@ class DroneHoverEnv(DirectRLEnv):
         else:
             # What the flight controller actually has, with realistic errors.
             accel = (lin_acc + self._accel_bias
-                     + torch.randn_like(self._accel_bias) * self.cfg.accel_noise_std   # incl. gravity, like a real IMU
+                     + torch.randn_like(self._accel_bias) * torch.as_tensor(self.cfg.accel_noise_std, device=self.device)   # incl. gravity, like a real IMU
                      ).clamp(-self.cfg.accel_clip, self.cfg.accel_clip)
             gyro = self.imu.data.ang_vel_b + self._gyro_bias \
-                + torch.randn_like(self._gyro_bias) * self.cfg.gyro_noise_std        # body axes
+                + torch.randn_like(self._gyro_bias) * torch.as_tensor(self.cfg.gyro_noise_std, device=self.device)        # body axes
             # Roll/pitch from the attitude estimate as the direction of gravity in the
             # body frame. Drift-free on a real drone (accelerometer-corrected), unlike
             # yaw or integrated position, so it's safe to give the policy.
@@ -722,7 +730,10 @@ class DroneHoverEnv(DirectRLEnv):
     # ------------------------------------------------------------------ dones
     def _get_dones(self):
         pos = self._local_pos()
-        crashed = pos[:, 2] < self.cfg.crash_height
+        low = pos[:, 2] < self.cfg.crash_height
+        self._airborne |= pos[:, 2] > self.cfg.crash_height + 0.15
+        stuck = ~self._airborne & (self.episode_length_buf * self.step_dt > self.cfg.ground_timeout_s)
+        crashed = (low & (self._airborne | ~self._ground_start)) | stuck
         hit_net = self._dist_to_net(pos) < self.cfg.net_margin
         # projected_gravity_b z is -1 when level, +1 upside down.
         tilt = torch.acos(torch.clamp(-self.drone.data.projected_gravity_b[:, 2], -1.0, 1.0))
@@ -771,6 +782,11 @@ class DroneHoverEnv(DirectRLEnv):
         root_state[:, 3:7] = torch.tensor([1.0, 0.0, 0.0, 0.0], device=dev)
         root_state[:, 7:10] = u(-self.cfg.spawn_lin_vel_range, self.cfg.spawn_lin_vel_range, n, 3)
         root_state[:, 10:13] = u(-self.cfg.spawn_ang_vel_range, self.cfg.spawn_ang_vel_range, n, 3)
+        ground = torch.rand(n, device=dev) < c.ground_start_prob
+        root_state[ground, 2] = self.scene.env_origins[env_ids][ground, 2] + c.ground_rest_z
+        root_state[ground, 7:13] = 0.0
+        self._ground_start[env_ids] = ground
+        self._airborne[env_ids] = False
 
         self.drone.write_root_pose_to_sim(root_state[:, 0:7], env_ids)
         self.drone.write_root_velocity_to_sim(root_state[:, 7:13], env_ids)

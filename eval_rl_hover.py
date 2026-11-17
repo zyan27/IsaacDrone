@@ -35,6 +35,8 @@ parser.add_argument("--lag", action="store_true",
                          "setpoints, frequent stalls (top of every training range)")
 parser.add_argument("--net_dropout", type=float, default=None,
                     help="Fix P(ToF misses the net) for the test, e.g. 0 or 0.7 (default: training range)")
+parser.add_argument("--ground_start_prob", type=float, default=None,
+                    help="fraction of test flights starting on the floor (default: as trained)")
 parser.add_argument("--out", type=str, default=None, help="JSON path (default: next to checkpoint)")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
@@ -62,6 +64,9 @@ def main():
     cfg.ctbr_thrust_center = ck.get("ctbr_thrust_center", cfg.ctbr_thrust_center)
     cfg.ctbr_thrust_span = ck.get("ctbr_thrust_span", cfg.ctbr_thrust_span)
     cfg.thrust_curve_k_range = tuple(ck.get("thrust_curve_k_range", cfg.thrust_curve_k_range))
+    if ck.get("real_noise"):
+        cfg.gyro_noise_std, cfg.accel_noise_std = (0.06, 0.10, 0.02), (1.0, 1.0, 2.7)
+    cfg.ground_start_prob = args.ground_start_prob if args.ground_start_prob is not None else ck.get("ground_start_prob", 0.0)
     cfg.obs_history = ck.get("obs_history", cfg.obs_history)
     if args.net_dropout is not None:
         cfg.tof_net_dropout_range = (args.net_dropout, args.net_dropout)

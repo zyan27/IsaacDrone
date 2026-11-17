@@ -62,6 +62,10 @@ parser.add_argument("--airframe", choices=["crazyflie", "dd24"], default="crazyf
 parser.add_argument("--residual_frac", type=float, default=0.33,
                     help="Policy thrust authority around hover, as a fraction of the hover command.")
 
+parser.add_argument("--real_noise", action="store_true",
+                    help="IMU noise = the DD24's in-flight vibration (gyro 0.06/0.10/0.02 rad/s, accel 1.0/1.0/2.7 m/s^2)")
+parser.add_argument("--ground_start_prob", type=float, default=0.0,
+                    help="fraction of episodes that start resting on the floor (learn to take off)")
 parser.add_argument("--real_hover", action="store_true",
                     help="Real DD24 hover throttle: 0.47 in the 2026-10-25 flight logs (sim default ~0.27). Thrust "
                          "curve ~quadratic (k 0.85-1.0 -> hover 0.43-0.47), ctbr thrust 0.47 +- 0.25.")
@@ -115,6 +119,10 @@ def main():
     if args.real_hover:
         env_cfg.ctbr_thrust_center, env_cfg.ctbr_thrust_span = 0.47, 0.25
         env_cfg.thrust_curve_k_range = (0.85, 1.0)
+    if args.real_noise:     # in-flight vibration measured on the DD24 (data/flight_logs/README.md)
+        env_cfg.gyro_noise_std = (0.06, 0.10, 0.02)
+        env_cfg.accel_noise_std = (1.0, 1.0, 2.7)
+    env_cfg.ground_start_prob = args.ground_start_prob
     env_cfg.__post_init__()   # recompute observation sizes for the chosen mode
     env_cfg.hover_height = 1.0
 
@@ -181,6 +189,8 @@ def main():
             "gamma": args.gamma,
             "ctbr_thrust_span": env_cfg.ctbr_thrust_span,
             "thrust_curve_k_range": list(env_cfg.thrust_curve_k_range),
+            "real_noise": bool(args.real_noise),
+            "ground_start_prob": float(args.ground_start_prob),
             "ctbr_max_rates": list(env_cfg.ctbr_max_rates),
             "policy_hz": 1.0 / (env_cfg.sim.dt * env_cfg.decimation),
             "lr_schedule": args.lr_schedule,

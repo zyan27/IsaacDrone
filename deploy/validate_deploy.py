@@ -31,6 +31,9 @@ parser.add_argument("--num_envs", type=int, default=64)
 parser.add_argument("--core_envs", type=int, default=16)
 parser.add_argument("--seed", type=int, default=777)
 parser.add_argument("--out", default=None)
+parser.add_argument("--takeoff", action="store_true",
+                    help="all drones start on the floor; Core does its scripted takeoff, then the policy "
+                         "(flight check only: during takeoff the sim's 'previous command' differs by design)")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 app_launcher = AppLauncher(args)
@@ -42,7 +45,7 @@ import torch  # noqa: E402
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from controllers.obs_norm import load_obs_norm  # noqa: E402
 from controllers.rl_hover_controller import RLHoverActor  # noqa: E402
-from deploy.dd24_policy_core import Core, Policy, SafetyCfg  # noqa: E402
+from deploy.dd24_policy_core import Core, Policy, SafetyCfg, TakeoffCfg  # noqa: E402
 from environments.drone_hover_env import DroneHoverEnv, DroneHoverEnvCfgDD24  # noqa: E402
 
 FLOW_DT = 0.066   # integration window of the synthetic flow message (any value works)
@@ -85,6 +88,9 @@ def main():
     cfg.ctbr_thrust_span = ck.get("ctbr_thrust_span", cfg.ctbr_thrust_span)
     cfg.thrust_curve_k_range = tuple(ck.get("thrust_curve_k_range", cfg.thrust_curve_k_range))
     cfg.obs_history = ck.get("obs_history", cfg.obs_history)
+    if ck.get("real_noise"):
+        cfg.gyro_noise_std, cfg.accel_noise_std = (0.06, 0.10, 0.02), (1.0, 1.0, 2.7)
+    cfg.ground_start_prob = 1.0 if args.takeoff else 0.0
     cfg.__post_init__()
     env = DroneHoverEnv(cfg=cfg, render_mode=None)
     dev, N, K = env.device, env.num_envs, min(args.core_envs, env.num_envs)
@@ -100,6 +106,8 @@ def main():
         assert abs(m[key] - ck[key]) < 1e-9, f"npz {key} {m[key]} != checkpoint {ck[key]}"
 
     cores = [None] * K
+    takeoff_ticks = [0] * K
+    handed = [False] * K
     T = int(env.max_episode_length)
     finished = torch.zeros(N, dtype=torch.bool, device=dev)
     ended_at = torch.full((N,), T, device=dev)
@@ -123,14 +131,26 @@ def main():
                     continue
                 f = on[i, (H - 1) * F:H * F]
                 if cores[i] is None:
-                    cores[i] = Core(pol, target_height=float(f[21]), safety=SafetyCfg(max_tilt_deg=180.0, max_height_m=99.0))
+                    cores[i] = Core(pol, target_height=float(f[21]), safety=SafetyCfg(max_tilt_deg=180.0, max_height_m=99.0),
+                                    takeoff=TakeoffCfg(enabled=args.takeoff))
                 c = cores[i]
                 feed(c, t_node, f, tof_max)
                 tk = c.tick(t_node, active=True)
+                if tk.mode == "TAKEOFF":
+                    span, ctr = m["ctbr_thrust_span"], m["ctbr_thrust_center"]
+                    a = np.clip(np.r_[(tk.thrust - ctr) / span, tk.rates / np.array(m["ctbr_max_rates"])], -1, 1)
+                    actions[i] = torch.as_tensor((a + 1) / 2, dtype=actions.dtype, device=dev)
+                    takeoff_ticks[i] += 1
+                    continue
                 if tk.mode != "RUN":
                     mode_bad += 1
+                    print(f"env {i} step {step}: {tk.mode} {tk.reason}")
                     continue
+                handed[i] = True
                 core_obs = np.concatenate(list(c.hist))
+                if args.takeoff:      # inputs differ by design after a takeoff; fly only
+                    actions[i] = torch.as_tensor((tk.cmd + 1.0) / 2.0, dtype=actions.dtype, device=dev)
+                    continue
                 d = np.abs(core_obs - on[i])
                 hist_err = max(hist_err, float(d.max()))
                 in_err = np.maximum(in_err, d[(H - 1) * F:H * F])
@@ -165,7 +185,13 @@ def main():
         "torch_z_err_mean_m": float(zmean[K:][torch_ok > 0].mean()) if torch_ok.sum() else None,
     }
     # Flow is rebuilt from a message (division by height, validity re-decided), so allow float slop.
-    res["pass"] = bool(hist_err < 1e-4 and out_err < 1e-4 and mode_bad == 0)
+    res["takeoff"] = bool(args.takeoff)
+    if args.takeoff:
+        res["handed_over"] = sum(handed)
+        res["takeoff_s_mean"] = float(np.mean([n for n in takeoff_ticks if n])) / m["policy_hz"] if any(takeoff_ticks) else None
+        res["pass"] = bool(core_ok.mean().item() >= 0.9 and sum(handed) == K and mode_bad == 0)
+    else:
+        res["pass"] = bool(hist_err < 1e-4 and out_err < 1e-4 and mode_bad == 0)
     print(json.dumps(res, indent=2))
     out = args.out or os.path.join(os.path.dirname(args.checkpoint), "validate.json")
     with open(out, "w") as fh:

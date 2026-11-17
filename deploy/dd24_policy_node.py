@@ -11,6 +11,15 @@ dry_run:=false: streams setpoints to /mavros/setpoint_raw/attitude:
   * IMU/down-ToF late  -> calm setpoint; very late, tilt > limit or too high -> STOP
     sending (PX4's offboard-loss failsafe, COM_OF_LOSS_T, takes over).
 Debug topics: ~/frame (22 newest inputs), ~/command (thrust, 3 rates, mode code).
+
+No-transmitter flight (takeoff:=true, the default; auto_start:=true):
+  * takeoff: from the floor the node climbs on its own (level hold + down-ToF height PID,
+    dd24_policy_core.TakeoffCfg) to takeoff_height, then hands over to the policy;
+  * auto_start: once sensors are live and setpoints have streamed start_delay_s, the node
+    switches PX4 to OFFBOARD and arms it (no RC switch needed);
+  * flight_s: after this many seconds of OFFBOARD the node commands AUTO.LAND.
+Any STOP (stale sensors, tilt, height, takeoff timeout) stops the stream: PX4's
+offboard-loss action (set COM_OBL_RC_ACT / COM_OBL_ACT to Land) takes over.
 """
 import math
 import time
@@ -20,12 +29,13 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, qos_profile_sensor_data
 from mavros_msgs.msg import AttitudeTarget, OpticalFlowRad, State
+from mavros_msgs.srv import CommandBool, SetMode
 from sensor_msgs.msg import Imu, Range
 from std_msgs.msg import Float32MultiArray
 
-from dd24_policy_core import Core, FlowCfg, Policy, SafetyCfg, roll_pitch_deg
+from dd24_policy_core import Core, FlowCfg, Policy, SafetyCfg, TakeoffCfg, roll_pitch_deg
 
-MODES = {"WAIT": 0.0, "RUN": 1.0, "NEUTRAL": 2.0, "STOP": 3.0}
+MODES = {"WAIT": 0.0, "RUN": 1.0, "NEUTRAL": 2.0, "STOP": 3.0, "TAKEOFF": 4.0}
 
 
 class DD24PolicyNode(Node):
@@ -47,7 +57,13 @@ class DD24PolicyNode(Node):
         safety = SafetyCfg(max_tilt_deg=float(P("max_tilt_deg", 60.0).value),
                            max_height_m=float(P("max_height_m", 2.2).value),
                            thrust_gain=float(P("thrust_gain", 1.0).value))
-        self.core = Core(Policy(policy_path), float(P("target_height", 0.8).value), flow, safety)
+        takeoff = TakeoffCfg(enabled=bool(P("takeoff", True).value),
+                             handover_m=float(P("takeoff_height", 0.5).value),
+                             climb_rate=float(P("climb_rate", 0.3).value))
+        self.auto_start = bool(P("auto_start", False).value)
+        self.start_delay = float(P("start_delay_s", 3.0).value)
+        self.flight_s = float(P("flight_s", 20.0).value)
+        self.core = Core(Policy(policy_path), float(P("target_height", 0.8).value), flow, safety, takeoff)
         flow.height_range, flow.max_rate = tuple(self.core.m["flow_height_range"]), self.core.m["flow_max_rate"]
         self.log_period = 1.0 / float(P("log_hz", 2.0).value)
         rate = float(P("rate_hz", self.core.m["policy_hz"]).value)
@@ -70,6 +86,9 @@ class DD24PolicyNode(Node):
         self.pub_frame = self.create_publisher(Float32MultiArray, "~/frame", QoSProfile(depth=10))
         self.pub_cmd = self.create_publisher(Float32MultiArray, "~/command", QoSProfile(depth=10))
         self.last_log, self.last_mode = 0.0, None
+        self.t_start, self.t_offboard, self.landing, self.last_req = self.now(), None, False, 0.0
+        self.cli_mode = self.create_client(SetMode, "/mavros/set_mode")
+        self.cli_arm = self.create_client(CommandBool, "/mavros/cmd/arming")
         self.timer = self.create_timer(1.0 / rate, self.tick)
         m = self.core.m
         self.get_logger().info(
@@ -102,6 +121,8 @@ class DD24PolicyNode(Node):
         t = self.now()
         flying = self.armed and self.mode == "OFFBOARD"
         r = self.core.tick(t, active=True if self.dry_run else flying)
+        if not self.dry_run:
+            self.supervise(t, flying, r)
         if not self.dry_run and r.mode != "STOP":
             sp = AttitudeTarget()
             sp.header.stamp = self.get_clock().now().to_msg()
@@ -122,6 +143,33 @@ class DD24PolicyNode(Node):
         if t - self.last_log > self.log_period:
             self.last_log = t
             self.log_status(r, flying)
+
+    def request_mode(self, mode):
+        req = SetMode.Request()
+        req.custom_mode = mode
+        self.cli_mode.call_async(req)
+        self.get_logger().warn(f"requesting PX4 mode {mode}")
+
+    def supervise(self, t, flying, r):
+        """auto_start: OFFBOARD + arm once ready; flight_s later: AUTO.LAND. Retries 1/s."""
+        if flying and self.t_offboard is None:
+            self.t_offboard = t
+        if self.landing or t - self.last_req < 1.0:
+            return
+        if self.t_offboard is not None and t - self.t_offboard > self.flight_s:
+            self.landing = True
+            self.request_mode("AUTO.LAND")
+            return
+        if self.auto_start and not flying and self.t_offboard is None and r.mode in ("WAIT", "RUN", "TAKEOFF") \
+                and t - self.t_start > self.start_delay:
+            self.last_req = t
+            if self.mode != "OFFBOARD":
+                self.request_mode("OFFBOARD")
+            elif not self.armed:
+                req = CommandBool.Request()
+                req.value = True
+                self.cli_arm.call_async(req)
+                self.get_logger().warn("requesting ARM")
 
     def log_status(self, r, flying):
         core = self.core

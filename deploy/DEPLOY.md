@@ -97,3 +97,18 @@ position input, only flow velocity.
 | `thrust_gain` | 1.0 | scales the thrust setpoint (only if hover throttle is far from training) |
 | `robot`, `tof_topic`, `tof_down/up/front/left/right` | noducksgiven, ... | ToF topics: `/{robot}/{name}_tof_driver_node/range` with driver names bottom/top/front/left/right |
 | `imu_topic`, `flow_topic`, `setpoint_topic` | MAVROS / Duckietown defaults | |
+
+## No-transmitter flight (node arms, takes off, lands)
+
+`bash run_on_drone.sh -p dry_run:=false -p auto_start:=true -p target_height:=0.8 -p flight_s:=20`
+
+* `auto_start` (default false): after `start_delay_s` (3 s) of streaming, the node requests OFFBOARD, then ARM.
+* `takeoff` (default true): from the floor it climbs on its own (level hold + down-ToF height PID) to
+  `takeoff_height` (0.5 m) at `climb_rate` (0.3 m/s), then the policy flies (log mode `TAKEOFF` -> `RUN`).
+  Not at 0.5 m after 8 s -> STOP.
+* `flight_s` (20): seconds after OFFBOARD, the node requests AUTO.LAND.
+* Any STOP stops the setpoint stream: set PX4's offboard-loss action to **Land** (`COM_OBL_RC_ACT` /
+  `COM_OBL_ACT`, `COM_OF_LOSS_T` 0.5 s). Keep a disarm/kill switch on the RC anyway.
+* PX4 may refuse OFFBOARD or arming with no RC connected: check `COM_RCL_EXCEPT` / `COM_RC_IN_MODE`
+  on the bench with the props OFF.
+* Virtual Duckiedrone (Mac): `deploy/dts_virtual.sh setup | matrix | dry | fly`.
