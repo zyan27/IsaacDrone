@@ -1,0 +1,59 @@
+{
+  "checkpoint": "/users/zyan33/IsaacDrone/runs/dd24_realhover_calm_s0/best.pt",
+  "airframe": "dd24",
+  "obs_mode": "onboard",
+  "net_dropout_range": [
+    0.0,
+    0.7
+  ],
+  "episodes": 256,
+  "episode_s": 20.0,
+  "success_rate": 0.98046875,
+  "crash_rate": 0.01171875,
+  "net_rate": 0.0078125,
+  "flip_rate": 0.0,
+  "mean_survival_s": 19.754140853881836,
+  "z_err_mean_m": 0.03634743019938469,
+  "xy_err_mean_m": 0.2268567532300949,
+  "pos_err_p95_m": 0.4705181419849396,
+  "min_net_dist_m": 0.30045127868652344,
+  "train_best_reward": 0.43792206048965454,
+  "train_iter": 378,
+  "scenario": "random",
+  "lag_worst_case": false,
+  "by_scenario": {
+    "net_only": {
+      "episodes": 38,
+      "success_rate": 0.9736841917037964,
+      "net_rate": 0.02631578966975212,
+      "crash_rate": 0.0,
+      "z_err_mean_m": 0.03928324207663536,
+      "xy_err_mean_m": 0.20981377363204956
+    },
+    "net_in_room": {
+      "episodes": 82,
+      "success_rate": 0.9756097197532654,
+      "net_rate": 0.012195121496915817,
+      "crash_rate": 0.012195121496915817,
+      "z_err_mean_m": 0.03617700934410095,
+      "xy_err_mean_m": 0.21807585656642914
+    },
+    "room": {
+      "episodes": 101,
+      "success_rate": 0.9900990128517151,
+      "net_rate": 0.0,
+      "crash_rate": 0.009900989942252636,
+      "z_err_mean_m": 0.03613245114684105,
+      "xy_err_mean_m": 0.23877215385437012
+    },
+    "open": {
+      "episodes": 35,
+      "success_rate": 0.9714285731315613,
+      "net_rate": 0.0,
+      "crash_rate": 0.02857142873108387,
+      "z_err_mean_m": 0.03409949317574501,
+      "xy_err_mean_m": 0.2315203994512558
+    }
+  },
+  "pass": false
+}

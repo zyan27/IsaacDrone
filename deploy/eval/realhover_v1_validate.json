@@ -1,0 +1,40 @@
+{
+  "checkpoint": "runs/dd24_realhover_s0/best.pt",
+  "npz": "runs/dd24_realhover_s0/policy.npz",
+  "iter": 336,
+  "ctbr_thrust_center": 0.47,
+  "input_max_abs_err": 1.0,
+  "input_worst_fields": [
+    [
+      "flow_valid",
+      1.0
+    ],
+    [
+      "flow_vy",
+      0.30894026160240173
+    ],
+    [
+      "flow_vx",
+      0.1761050522327423
+    ],
+    [
+      "grav_z",
+      1.4064816633574395e-07
+    ],
+    [
+      "prev_pitch_rate",
+      5.96017943887972e-08
+    ],
+    [
+      "prev_thrust",
+      5.959390358967198e-08
+    ]
+  ],
+  "output_max_abs_err_npz_vs_torch": 4.591985574564639e-07,
+  "non_run_ticks": 0,
+  "core_success_rate": 0.875,
+  "torch_success_rate": 0.9583333134651184,
+  "core_z_err_mean_m": 0.03625578060746193,
+  "torch_z_err_mean_m": 0.02968538925051689,
+  "pass": false
+}
