@@ -1,0 +1,35 @@
+{
+  "checkpoint": "/users/zyan33/IsaacDrone/runs/dd24_realhover_calm_s0/best.pt",
+  "airframe": "dd24",
+  "obs_mode": "onboard",
+  "net_dropout_range": [
+    0.0,
+    0.7
+  ],
+  "episodes": 256,
+  "episode_s": 20.0,
+  "success_rate": 0.99609375,
+  "crash_rate": 0.0,
+  "net_rate": 0.00390625,
+  "flip_rate": 0.0,
+  "mean_survival_s": 19.93960952758789,
+  "z_err_mean_m": 0.03348856791853905,
+  "xy_err_mean_m": 0.4158463776111603,
+  "pos_err_p95_m": 0.7677722573280334,
+  "min_net_dist_m": 0.3259541988372803,
+  "train_best_reward": 0.43792206048965454,
+  "train_iter": 378,
+  "scenario": "fixed_net",
+  "lag_worst_case": false,
+  "by_scenario": {
+    "fixed_net": {
+      "episodes": 256,
+      "success_rate": 0.99609375,
+      "net_rate": 0.00390625,
+      "crash_rate": 0.0,
+      "z_err_mean_m": 0.03348856791853905,
+      "xy_err_mean_m": 0.4158463776111603
+    }
+  },
+  "pass": false
+}

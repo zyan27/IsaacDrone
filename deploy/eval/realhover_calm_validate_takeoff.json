@@ -1,0 +1,43 @@
+{
+  "checkpoint": "runs/dd24_realhover_calm_s0/best.pt",
+  "npz": "runs/dd24_realhover_calm_s0/policy.npz",
+  "iter": 378,
+  "ctbr_thrust_center": 0.47,
+  "input_max_abs_err": 0.0,
+  "input_worst_fields": [
+    [
+      "accel_x",
+      0.0
+    ],
+    [
+      "accel_y",
+      0.0
+    ],
+    [
+      "accel_z",
+      0.0
+    ],
+    [
+      "gyro_x",
+      0.0
+    ],
+    [
+      "gyro_y",
+      0.0
+    ],
+    [
+      "gyro_z",
+      0.0
+    ]
+  ],
+  "output_max_abs_err_npz_vs_torch": 0.0,
+  "non_run_ticks": 0,
+  "core_success_rate": 1.0,
+  "torch_success_rate": 0.9375,
+  "core_z_err_mean_m": 0.030885156244039536,
+  "torch_z_err_mean_m": 0.03564346209168434,
+  "takeoff": true,
+  "handed_over": 32,
+  "takeoff_s_mean": 1.028125,
+  "pass": true
+}
