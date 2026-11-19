@@ -231,6 +231,6 @@ plane download on first run) before you spend an 8-hour allocation.
   interactively (`interact -q gpu -g 1 -t 1:00:00`) to warm `~/scratch/isaac/cache`.
 * **`No module named isaaclab`** during training: the setup job's user install
   didn't land in `$PYUSER`. Check its log for `user site enabled: False`. If
-  you see that, ask me for the overlay-image variant.
+  you see that, the container needs a writable overlay image instead of a user install.
 * **`apptainer: command not found`**: CCV ships Apptainer natively on compute
   nodes. Make sure you are on a compute node, not a login node.
