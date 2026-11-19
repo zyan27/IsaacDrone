@@ -77,6 +77,49 @@ Isaac Sim can't live in a venv on Oscar. Its pip wheels need GLIBC >= 2.35, newe
 than Oscar's OS. So Isaac runs from the Apptainer image, and the venv is for RotorPy
 (CPU) and for looking at results.
 
+### Big run in one command (recommended)
+```bash
+cd ~/IsaacDrone && git pull
+ITERS=10000 SEEDS=0-2 MAIL_USER=you@brown.edu bash oscar/smoke_then_overnight.sh
+```
+Runs a 40-min smoke test, checks it (`oscar/check_smoke.py`: all four tests ran,
+learning rate not pinned, KL sane) and only then launches the long Isaac run.
+`cat oscar/logs/gate_*.out` shows the decision. ~4.5 s/iteration on an A5000 with
+1024 envs: 10000 iterations = ~12.5 h per seed (one automatic resubmit), two seeds
+at a time on a free account.
+
+### Test the best checkpoints and fine-tune (after a run plateaus)
+```bash
+scancel <training job id>          # policies are already saved in each seed's best.pt
+RUN=dd24_hover_1115_1834 MAIL_USER=you@brown.edu bash oscar/finetune_tonight.sh
+```
+Tests every seed's `best.pt` (four tests), picks the best seed (`oscar/pick_best.py`:
+mean success over the four tests), then fine-tunes it for 1500 iterations from its
+`best.pt` with the learning-rate ceiling decaying 3e-4 -> 1e-5 (`--init_from`,
+`--lr_max_final`) and tests the result. Compare everything with
+`python3 oscar/pick_best.py runs/${RUN}_s0 runs/${RUN}_s1 runs/${RUN}_ft_s*`.
+
+### Compare two training variants (A/B)
+```bash
+ITERS=2000 MAIL_USER=you@brown.edu bash oscar/ab_test.sh
+```
+Smoke test first (calm reward), then on one GPU each: A = original reward (`--reward v1
+--gamma 0.99`), B = calm reward (`--reward calm --gamma 0.995`: crash 40, horizontal-speed,
+tilt and smoothness penalties, ~4 s look-ahead). Both include the accelerometer fix.
+Compare with `pick_best.py` and the flight recorder. Any run can use
+`EXTRA="--reward calm --gamma 0.995"`.
+
+### Why and when does it fail? (flight recorder)
+```bash
+CKPT=runs/dd24_hover_1115_1834_s0/best.pt sbatch oscar/flight_recorder.sbatch
+#   SCENARIO=fixed_net or LAG=1 for the 3x3 net / worst-case lag
+```
+Flies 512 drones for one episode each (same setup as the tests), logs every step,
+then writes `<ckpt dir>/flights_<scenario>/`: `report.txt` (failure modes, when they
+happen, which conditions make failure or drift more likely), `plots/` (one
+flight-recorder dashboard per selected failure / worst drifter) and `videos/`
+(top + side animation of each, ToF beams as the policy saw them).
+
 ### Submit everything before you leave
 ```bash
 cd ~/IsaacDrone && git pull
@@ -105,6 +148,21 @@ tail -n 30 oscar/logs/isaac_hover_*_0.out
 mean horizontal error under 15 cm, and (Isaac) mean height error under 10 cm.
 These thresholds live in the eval scripts.
 
+### Training settings (why)
+* Inputs are normalised with running mean/std (saved in the checkpoint).
+* 4 minibatches x 5 epochs per iteration (20 updates), as in Isaac Lab's rsl_rl.
+* Initial action noise log_std = -1.6.
+* Learning rate adapted once per epoch (not per minibatch), capped at 1e-3, and an
+  epoch stops early if KL > 0.04. Actor output is linear (clamped by the env), so it
+  can't saturate. History: smoke test 1 had lr collapse to 1e-5; smoke test 2 had it
+  run away to 1e-2 and saturate the sigmoid output.
+
+### Learning rate
+Training uses an **adaptive** schedule by default: after every minibatch the
+learning rate is lowered if the policy just moved too far (KL > 0.02) and raised if
+it barely moved (KL < 0.005), within 1e-5..1e-3. `lr` and `kl` are printed every
+iteration and saved in `progress.csv`. To compare, pass `EXTRA="--lr_schedule linear"`.
+
 ### Useful knobs (environment variables)
 ```bash
 SEEDS=0-4 bash oscar/overnight.sh                     # more seeds
@@ -128,6 +186,36 @@ python rotorpy_dd24/eval_policy.py --model runs/rotorpy_hover_1114_s0/latest.zip
 python rotorpy_dd24/visualize_policy.py --model runs/rotorpy_hover_1114_s0/latest.zip   # plot
 ```
 
+## What the policy is trained on (Isaac)
+**Output = PX4 offboard setpoint:** collective thrust + body rates, what a MAVROS
+node publishes on `/mavros/setpoint_raw/attitude`. Below it, a simulated PX4 rate
+controller (default MC_*RATE gains, IMU_DGYRO_CUTOFF 20 Hz, quad-X allocation from
+`fc_firmware/duckiedrone-px4-v4.params`) runs at 200 Hz with randomised gains,
+motor lag and thrust curve. Policy rate 50 Hz.
+
+**Inputs** (exact layout: `deploy/INTERFACE.md`), each at the rate the node gets it:
+IMU + attitude (~50 Hz), 5 ToFs (20 Hz), Pi-camera optical flow (15 Hz, 60-120 ms
+latency), last command, target height; 8 steps of history (176 numbers).
+
+**Scenes** re-drawn every episode (`environments/scenes.py`): net alone, net inside
+a room, room with furniture, open hall, plus clutter and ghost ToF returns. The
+drone holds the spot it started at, at a random target height.
+
+Each run is tested three ways: `eval.json` (training mix, per-scenario breakdown),
+`eval_net70.json` (ToFs miss the net 70% of the time) and `eval_fixednet.json`.
+
+## 5. Watching the policy fly (videos)
+```bash
+sbatch oscar/record_video.sbatch                                     # seed 0, ~15-25 min
+CKPT=runs/dd24_hover_1115_s1/best.pt sbatch oscar/record_video.sbatch  # another run
+```
+Writes `arena.mp4`, `chase.mp4`, `top.mp4` and `arena_net70.mp4` (the ToFs miss the
+net 70% of the time) into `<run>/videos/`. The net is drawn as a strand grid and
+the hover target as a red dot. Copy them to your Mac:
+```bash
+scp -r YOURID@ssh.ccv.brown.edu:~/IsaacDrone/runs/dd24_hover_1115_s0/videos ~/Downloads/
+```
+
 ## Recommended first run
 Before the first overnight batch, run a short Isaac smoke test:
 `ITERS=30 WALL_MIN=40 RESUBMITS=0 sbatch --time=00:40:00 oscar/train_eval_isaac.sbatch`.
@@ -143,6 +231,6 @@ plane download on first run) before you spend an 8-hour allocation.
   interactively (`interact -q gpu -g 1 -t 1:00:00`) to warm `~/scratch/isaac/cache`.
 * **`No module named isaaclab`** during training: the setup job's user install
   didn't land in `$PYUSER`. Check its log for `user site enabled: False`. If
-  you see that, ask me for the overlay-image variant.
+  you see that, the container needs a writable overlay image instead of a user install.
 * **`apptainer: command not found`**: CCV ships Apptainer natively on compute
   nodes. Make sure you are on a compute node, not a login node.

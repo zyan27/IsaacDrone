@@ -19,9 +19,11 @@ ISAAC_CACHE="${ISAAC_CACHE:-$ISAAC_ROOT/cache}"
 PYUSER="${PYUSER:-$ISAAC_ROOT/pyuser}"
 
 isaac_exec() {
-    mkdir -p "$ISAAC_CACHE"/{kit,ov,pip,glcache,computecache,logs,data,documents} "$PYUSER"
+    mkdir -p "$ISAAC_CACHE"/{kit,kitdata,kitlogs,ov,pip,glcache,computecache,logs,data,documents} "$PYUSER"
     # Apptainer runs as YOU (not root), so Omniverse caches land under $HOME
     # inside the container. Redirect each of them to scratch.
+    # ISAAC_TIMEOUT (e.g. 30m) kills the container if it overruns; unset = no limit.
+    timeout --kill-after=60 "${ISAAC_TIMEOUT:-0}" \
     apptainer exec --nv \
         --env ACCEPT_EULA=Y \
         --env OMNI_KIT_ACCEPT_EULA=YES \
@@ -31,6 +33,8 @@ isaac_exec() {
         --bind "$SCRATCH_ROOT" \
         --bind "$REPO_DIR" \
         --bind "$ISAAC_CACHE/kit:/isaac-sim/kit/cache" \
+        --bind "$ISAAC_CACHE/kitdata:/isaac-sim/kit/data" \
+        --bind "$ISAAC_CACHE/kitlogs:/isaac-sim/kit/logs" \
         --bind "$ISAAC_CACHE/ov:$HOME/.cache/ov" \
         --bind "$ISAAC_CACHE/pip:$HOME/.cache/pip" \
         --bind "$ISAAC_CACHE/glcache:$HOME/.cache/nvidia/GLCache" \
@@ -39,5 +43,8 @@ isaac_exec() {
         --bind "$ISAAC_CACHE/data:$HOME/.local/share/ov/data" \
         --bind "$ISAAC_CACHE/documents:$HOME/Documents" \
         "$SIF" \
-        bash -lc "$*"
+        env -u BASH_ENV -u 'BASH_FUNC_module%%' -u 'BASH_FUNC_ml%%' \
+        bash -c "$*"
+    # (env -u ...: Oscar exports its Lmod `module` function into every shell; it
+    #  points at host paths that don't exist in the container, so drop it.)
 }

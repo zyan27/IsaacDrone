@@ -8,7 +8,7 @@
 #     sinfo -p gpu -o "%f" | tr ',' '\n' | sort -u
 # Override on the command line, e.g.  sbatch --constraint="a6000|a40" ...
 #SBATCH --constraint=a5000|geforce3090|a6000|a40
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=6
 #SBATCH --mem=32G
 #SBATCH --time=08:00:00
 #SBATCH --output=oscar/logs/%x_%j.out

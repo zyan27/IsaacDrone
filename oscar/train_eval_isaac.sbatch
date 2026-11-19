@@ -11,8 +11,12 @@
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:1
 #SBATCH --constraint=a5000|geforce3090|a6000|a40
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=32G
+# Free (exploratory) GPU accounts are capped at 2 GPUs and 12 CPU cores across ALL
+# running jobs, so 6 cores per job lets two seeds run at the same time. Oscar gives
+# 4 GB per core, so asking for 32G silently became 8 cores (only 1 job fit);
+# 24G keeps it at 6.
+#SBATCH --cpus-per-task=6
+#SBATCH --mem=24G
 #SBATCH --time=10:00:00
 #SBATCH --output=oscar/logs/%x_%A_%a.out
 #SBATCH --error=oscar/logs/%x_%A_%a.err
@@ -24,7 +28,7 @@ AIRFRAME="${AIRFRAME:-dd24}"
 RUN_TAG="${RUN_TAG:-${AIRFRAME}_hover}"
 RUN_DIR="runs/${RUN_TAG}_s${SEED}"
 NUM_ENVS="${NUM_ENVS:-1024}"
-ITERS="${ITERS:-3000}"
+ITERS="${ITERS:-6000}"   # 200 Hz physics now: ~9-12 h, so expect 1 automatic resubmit
 STEPS="${STEPS:-128}"
 EVAL_ENVS="${EVAL_ENVS:-512}"
 RESUBMITS="${RESUBMITS:-2}"
@@ -38,9 +42,12 @@ echo "== $(date) job ${SLURM_JOB_ID:-local} seed $SEED -> $RUN_DIR"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
 
 # ---- train ----------------------------------------------------------------
-isaac_exec "cd '$REPO_DIR' && '$ISAACLAB_DIR/isaaclab.sh' -p train_rl_hover.py --headless \
+# Hard stop 10 min after the training time limit in case Isaac hangs; DONE / latest.pt
+# decide what happens next, not the exit code.
+ISAAC_TIMEOUT="$(( TRAIN_MIN + 10 ))m" isaac_exec "cd '$REPO_DIR' && '$ISAACLAB_DIR/isaaclab.sh' -p train_rl_hover.py --headless \
     --airframe $AIRFRAME --num_envs $NUM_ENVS --iters $ITERS --steps $STEPS \
-    --seed $SEED --run_dir $RUN_DIR --resume --time_limit_min $TRAIN_MIN"
+    --seed $SEED --run_dir $RUN_DIR --resume --time_limit_min $TRAIN_MIN ${EXTRA:-}" \
+    || echo "WARNING: training process exited with an error or timed out (checking DONE/latest.pt)"
 
 # ---- not finished? resubmit to continue ----------------------------------
 if [ ! -f "$RUN_DIR/DONE" ]; then
@@ -55,7 +62,20 @@ fi
 
 # ---- test -----------------------------------------------------------------
 if [ -f "$RUN_DIR/best.pt" ]; then
-    isaac_exec "cd '$REPO_DIR' && '$ISAACLAB_DIR/isaaclab.sh' -p eval_rl_hover.py --headless \
-        --checkpoint $RUN_DIR/best.pt --num_envs $EVAL_ENVS --out $RUN_DIR/eval.json"
+    ISAAC_TIMEOUT=20m isaac_exec "cd '$REPO_DIR' && '$ISAACLAB_DIR/isaaclab.sh' -p eval_rl_hover.py --headless \
+        --checkpoint $RUN_DIR/best.pt --num_envs $EVAL_ENVS --out $RUN_DIR/eval.json" \
+        || echo "WARNING: test failed or timed out"
+    # Worst case: the ToFs miss the net 70% of the time.
+    ISAAC_TIMEOUT=20m isaac_exec "cd '$REPO_DIR' && '$ISAACLAB_DIR/isaaclab.sh' -p eval_rl_hover.py --headless \
+        --checkpoint $RUN_DIR/best.pt --num_envs $EVAL_ENVS --net_dropout 0.7 \
+        --out $RUN_DIR/eval_net70.json" || echo "WARNING: worst-case test failed or timed out"
+    # The original fixed 3x3 m net, to compare with earlier runs.
+    ISAAC_TIMEOUT=20m isaac_exec "cd '$REPO_DIR' && '$ISAACLAB_DIR/isaaclab.sh' -p eval_rl_hover.py --headless \
+        --checkpoint $RUN_DIR/best.pt --num_envs $EVAL_ENVS --scenario fixed_net \
+        --out $RUN_DIR/eval_fixednet.json" || echo "WARNING: fixed-net test failed or timed out"
+    # Worst-case laggy links (max latency, dropped messages and setpoints, stalls).
+    ISAAC_TIMEOUT=20m isaac_exec "cd '$REPO_DIR' && '$ISAACLAB_DIR/isaaclab.sh' -p eval_rl_hover.py --headless \
+        --checkpoint $RUN_DIR/best.pt --num_envs $EVAL_ENVS --lag \
+        --out $RUN_DIR/eval_lag.json" || echo "WARNING: laggy-link test failed or timed out"
 fi
 echo "== $(date) done"

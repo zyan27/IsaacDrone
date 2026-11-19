@@ -27,6 +27,14 @@ parser.add_argument("--airframe", choices=["crazyflie", "dd24"], default=None,
                     help="Defaults to the airframe stored in the checkpoint.")
 parser.add_argument("--num_envs", type=int, default=512)
 parser.add_argument("--seed", type=int, default=12345, help="Different from training seeds.")
+parser.add_argument("--scenario", default="random",
+                    choices=["random", "net_only", "net_in_room", "room", "open", "fixed_net"],
+                    help="random = training mix; fixed_net = the original arena")
+parser.add_argument("--lag", action="store_true",
+                    help="Worst-case laggy links: max latencies, 15%% ToF/flow drops, 10%% lost "
+                         "setpoints, frequent stalls (top of every training range)")
+parser.add_argument("--net_dropout", type=float, default=None,
+                    help="Fix P(ToF misses the net) for the test, e.g. 0 or 0.7 (default: training range)")
 parser.add_argument("--out", type=str, default=None, help="JSON path (default: next to checkpoint)")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
@@ -47,13 +55,37 @@ def main():
     cfg = DroneHoverEnvCfgDD24() if airframe == "dd24" else DroneHoverEnvCfg()
     cfg.scene.num_envs = args.num_envs
     cfg.seed = args.seed
+    # Older checkpoints (before onboard mode) were trained on ground-truth inputs.
+    cfg.obs_mode = ck.get("obs_mode", "privileged")
+    # Checkpoints from before thrust/body-rate control commanded motors directly.
+    cfg.control_mode = ck.get("control_mode", "motors")
+    cfg.obs_history = ck.get("obs_history", cfg.obs_history)
+    if args.net_dropout is not None:
+        cfg.tof_net_dropout_range = (args.net_dropout, args.net_dropout)
+    cfg.scenario = args.scenario
+    if args.lag:
+        top = lambda r: (r[1], r[1])  # noqa: E731
+        for name in ["imu_latency_s_range", "tof_latency_s_range", "flow_latency_s_range", "cmd_latency_s_range",
+                     "sensor_drop_prob_range", "imu_drop_prob_range", "cmd_drop_prob_range",
+                     "sensor_stall_rate_range", "imu_stall_rate_range", "cmd_stall_rate_range"]:
+            setattr(cfg, name, top(getattr(cfg, name)))
+        cfg.tof_rate_hz_range = (cfg.tof_rate_hz_range[0],) * 2
+        cfg.flow_rate_hz_range = (cfg.flow_rate_hz_range[0],) * 2
+    cfg.__post_init__()
+    if ck.get("obs_dim") != cfg.observation_space:
+        raise SystemExit(
+            f"Checkpoint expects {ck.get('obs_dim')} inputs but this environment gives "
+            f"{cfg.observation_space}. It was trained before the current sensor set "
+            "(optical flow / scenes); evaluate it with the code it was trained with, or retrain.")
     env = DroneHoverEnv(cfg=cfg, render_mode=None)
     dev = env.device
     N = env.num_envs
 
-    actor = RLHoverActor(obs_dim=ck.get("obs_dim", 14), action_dim=4).to(dev)
+    actor = RLHoverActor(obs_dim=ck.get("obs_dim", 14), action_dim=4, out=ck.get("actor_out", "sigmoid")).to(dev)
     actor.load_state_dict(ck["actor"])
     actor.eval()
+    from controllers.obs_norm import load_obs_norm
+    norm = load_obs_norm(ck, actor.net[0].in_features, dev)
     hover = ck.get("hover_motor", env.hover_motor)
     rscale = ck.get("residual_scale", 0.15)
 
@@ -70,10 +102,15 @@ def main():
     min_net = torch.full((N,), float("inf"), device=dev)
 
     obs, _ = env.reset()
+    from environments.scenes import SCENARIOS
+    scen = env._scene["scen"].clone()      # scenario of each env's first episode
     with torch.inference_mode():
         for t in range(T):
-            raw = actor(obs["policy"][:, : actor.net[0].in_features])
-            actions = torch.clamp(hover + (raw - 0.5) * rscale, 0.0, 1.0)
+            raw = actor(norm(obs["policy"][:, : actor.net[0].in_features]))
+            if cfg.control_mode == "ctbr":
+                actions = raw.clamp(0.0, 1.0)
+            else:
+                actions = torch.clamp(hover + (raw - 0.5) * rscale, 0.0, 1.0)
             obs, _, terminated, truncated, _ = env.step(actions)
 
             live = ~finished
@@ -88,7 +125,7 @@ def main():
             # envs were auto-reset, so their state belongs to a new episode).
             still = ~finished
             pos = env._local_pos()
-            err = pos - env._target_local
+            err = pos - env._target
             min_net[still] = torch.minimum(min_net[still], env._dist_to_net(pos)[still])
             if t >= window_start:
                 sum_z[still] += err[still, 2].abs()
@@ -104,6 +141,8 @@ def main():
     res = {
         "checkpoint": os.path.abspath(args.checkpoint),
         "airframe": airframe,
+        "obs_mode": cfg.obs_mode,
+        "net_dropout_range": list(cfg.tof_net_dropout_range),
         "episodes": N,
         "episode_s": cfg.episode_length_s,
         "success_rate": survived.float().mean().item(),
@@ -119,6 +158,23 @@ def main():
         "train_iter": ck.get("iter"),
     }
     # Simple pass/fail so overnight runs can be skimmed quickly.
+    by = {}
+    for i, name in enumerate(SCENARIOS):
+        m = scen == i
+        if not bool(m.any()):
+            continue
+        hw = m & has_win
+        by[name] = {
+            "episodes": int(m.sum()),
+            "success_rate": survived[m].float().mean().item(),
+            "net_rate": (reason[m] == 2).float().mean().item(),
+            "crash_rate": ((reason[m] == 1) | (reason[m] == 3)).float().mean().item(),
+            "z_err_mean_m": (sum_z[hw] / n_win[hw]).mean().item() if hw.any() else None,
+            "xy_err_mean_m": (sum_xy[hw] / n_win[hw]).mean().item() if hw.any() else None,
+        }
+    res["scenario"] = args.scenario
+    res["lag_worst_case"] = bool(args.lag)
+    res["by_scenario"] = by
     res["pass"] = bool(res["success_rate"] >= 0.95 and (res["xy_err_mean_m"] or 9) < 0.15
                        and (res["z_err_mean_m"] or 9) < 0.10)
 
@@ -131,5 +187,16 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
-    simulation_app.close()
+    # Isaac Sim's simulation_app.close() can hang forever in headless containers
+    # (it did on Oscar: 6+ hours after training had finished). Everything is already
+    # written to disk by now, so exit the process directly instead.
+    import os as _os, sys as _sys, traceback as _tb
+    _code = 0
+    try:
+        main()
+    except Exception:
+        _tb.print_exc()
+        _code = 1
+    _sys.stdout.flush()
+    _sys.stderr.flush()
+    _os._exit(_code)

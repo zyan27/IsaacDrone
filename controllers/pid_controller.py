@@ -115,10 +115,12 @@ class DroneWaypointPID:
         base = torch.ones_like(z_error) * self.hover_motor
         base = base + collective
 
-        m1 = base - roll_cmd - pitch_cmd + yaw_cmd
-        m2 = base - roll_cmd + pitch_cmd - yaw_cmd
-        m3 = base + roll_cmd + pitch_cmd + yaw_cmd
-        m4 = base + roll_cmd - pitch_cmd - yaw_cmd
+        # +yaw torque (counter-clockwise from above) comes from the CW props m2/m4;
+        # m1/m3 are CCW props and turn the body clockwise (see drone_hover_env._set_wrench).
+        m1 = base - roll_cmd - pitch_cmd - yaw_cmd
+        m2 = base - roll_cmd + pitch_cmd + yaw_cmd
+        m3 = base + roll_cmd + pitch_cmd - yaw_cmd
+        m4 = base + roll_cmd - pitch_cmd + yaw_cmd
         
 
         actions = torch.stack([m1, m2, m3, m4], dim=-1)

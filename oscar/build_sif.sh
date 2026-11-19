@@ -32,4 +32,4 @@ apptainer build "isaac-sim-${ISAAC_SIM_TAG}.sif" \
 echo
 echo "Built: $SIF_DIR/isaac-sim-${ISAAC_SIM_TAG}.sif"
 echo "Next: clone Isaac Lab, install it into the container's python, then submit"
-echo "      oscar/train_hover.sbatch. See oscar/README.md."
+echo "      oscar/train_hover.sbatch. See docs/oscar.md."

@@ -14,11 +14,23 @@ mkdir -p oscar/logs
 
 SEEDS="${SEEDS:-0-2}"
 ONLY="${ONLY:-all}"
-STAMP="$(date +%m%d)"
+# Month-day-hour-minute, so two submissions never share run folders.
+STAMP="$(date +%m%d_%H%M)"
+
+# Refuse to start a second batch on top of one that's still queued/running.
+# Only queued/running jobs count; jobs stuck "completing" (CG) after a cancel don't.
+EXISTING="$(squeue -u "$USER" -h -t PENDING,RUNNING -o "%j" | grep -cE '^(isaac_hover|rotorpy_hover)' || true)"
+if [ "$EXISTING" -gt 0 ] && [ "${FORCE:-0}" != "1" ]; then
+    echo "You already have $EXISTING training job(s) queued or running:"
+    squeue -u "$USER" -t PENDING,RUNNING -o "%.14i %.16j %.8T %.10M %.20R" | grep -E 'JOBID|isaac_ho|rotorpy_' || true
+    echo "Cancel them first (scancel -u $USER) or rerun with FORCE=1 to add another batch."
+    exit 1
+fi
 MAIL=()
 [ -n "${MAIL_USER:-}" ] && MAIL=(--mail-type=END,FAIL --mail-user="$MAIL_USER")
 
-# Exploratory accounts get 2 GPUs at once; %2 runs at most 2 Isaac seeds together.
+# Exploratory accounts: 2 GPUs + 12 CPU cores at once across all GPU jobs.
+# %2 runs at most 2 Isaac seeds together (6 cores each); the 3rd starts when one ends.
 if [ "$ONLY" = "all" ] || [ "$ONLY" = "isaac" ]; then
     RUN_TAG="dd24_hover_${STAMP}" sbatch --array="${SEEDS}%2" "${MAIL[@]}" \
         --export=ALL,RUN_TAG="dd24_hover_${STAMP}" oscar/train_eval_isaac.sbatch

@@ -41,6 +41,16 @@ def sample_waypoints(device):
 
 def main():
     env_cfg = DroneHoverEnvCfgDD24() if args.airframe == "dd24" else DroneHoverEnvCfg()
+    # The PID demo reads ground-truth inputs; an RL checkpoint records its own mode.
+    if args.PID:
+        env_cfg.obs_mode = "privileged"
+        env_cfg.control_mode = "motors"     # the PID mixes its own motor commands
+    elif args.rl_checkpoint:
+        _ck = torch.load(args.rl_checkpoint, map_location="cpu")
+        env_cfg.obs_mode = _ck.get("obs_mode", "privileged")
+        env_cfg.obs_history = _ck.get("obs_history", env_cfg.obs_history)
+        env_cfg.control_mode = _ck.get("control_mode", "motors")
+    env_cfg.__post_init__()
 
     env = DroneHoverEnv(
         cfg=env_cfg,

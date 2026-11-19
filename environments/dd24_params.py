@@ -95,6 +95,26 @@ class DD24Params:
 DD24 = DD24Params()
 
 
+# --- Time-of-flight range sensors ----------------------------------------------
+# Five identical modules found in the DD24 CAD (16 x 10.5 mm board, 5 x 2.6 x 1.3 mm
+# chip, i.e. VL53L1X-sized). Facing = the side of the board the chip is on.
+# Body frame: x forward (camera side), y left, z up; origin at the CG.
+#   (name, position_m, unit_direction)
+DD24_TOF_SENSORS = (
+    ("down",  (-0.067,  0.000, -0.008), ( 0.0,  0.0, -1.0)),
+    ("up",    (-0.067,  0.000,  0.037), ( 0.0,  0.0,  1.0)),
+    ("front", ( 0.103,  0.000, -0.010), ( 1.0,  0.0,  0.0)),
+    ("left",  ( 0.000,  0.044,  0.015), ( 0.0,  1.0,  0.0)),
+    ("right", ( 0.000, -0.044,  0.015), ( 0.0, -1.0,  0.0)),
+)
+# [EST] VL53L1X: up to ~4 m in long-distance mode (less in bright light / on dark
+# or sparse targets like a net), ~4 cm minimum. Noise grows with distance.
+TOF_MAX_RANGE_M = 4.0
+TOF_MIN_RANGE_M = 0.04
+TOF_NOISE_STD_M = 0.005        # constant part
+TOF_NOISE_STD_FRAC = 0.01      # plus this fraction of the distance
+
+
 if __name__ == "__main__":
     p = DD24
     print(f"mass (AUW):            {p.mass_kg:.3f} kg   [user-measured]")
