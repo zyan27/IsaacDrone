@@ -52,7 +52,8 @@ def main(ckpt, out):
     }
     if ck.get("move_cmd"):
         meta["move_cmd"] = True
-        meta["move_speed_range"] = [float(x) for x in ck["move_speed_range"]]
+        meta["move_step_range"] = [float(x) for x in ck["move_step_range"]]
+        meta["move_offset_clip"] = float(ck["move_offset_clip"])
     F = 24 if meta.get("move_cmd") else 22
     if meta["obs_dim"] != F * meta["obs_history"]:
         raise SystemExit(f"obs_dim {meta['obs_dim']} != {F} x {meta['obs_history']}: unexpected input layout")

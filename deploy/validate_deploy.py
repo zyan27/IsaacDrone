@@ -76,7 +76,8 @@ def feed(core, t, f, tof_max):
            "quality": 255 if valid > 0.5 else 0, "distance": -1.0}
     core.on_flow(t, msg)
     if core.move_cmd:
-        core.set_move(float(f[22]), float(f[23]))
+        core.move_odometry = False          # use the sim's offset as is
+        core.move = np.array([f[22], f[23]], float)
 
 
 def main():
@@ -94,7 +95,7 @@ def main():
         cfg.gyro_noise_std, cfg.accel_noise_std = (0.06, 0.10, 0.02), (1.0, 1.0, 2.7)
     if ck.get("move_cmd"):
         cfg.move_cmd = True
-        cfg.move_speed_range = tuple(ck["move_speed_range"])
+        cfg.move_step_range = tuple(ck["move_step_range"])
     cfg.ground_start_prob = 1.0 if args.takeoff else 0.0
     cfg.__post_init__()
     env = DroneHoverEnv(cfg=cfg, render_mode=None)

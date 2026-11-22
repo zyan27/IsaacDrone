@@ -67,9 +67,10 @@ parser.add_argument("--real_noise", action="store_true",
 parser.add_argument("--ground_start_prob", type=float, default=0.0,
                     help="fraction of episodes that start resting on the floor (learn to take off)")
 parser.add_argument("--move", action="store_true",
-                    help="velocity-command task: body-frame (forward, left) m/s command as 2 extra inputs per frame; "
+                    help="position-step task: remaining (forward, left) offset to the hold point as 2 extra inputs per frame; "
                          "--init_from may be a hover checkpoint (its input layer is widened with zero weights)")
-parser.add_argument("--move_speed_max", type=float, default=0.5)
+parser.add_argument("--move_step_max", type=float, default=0.3, help="largest position step (m)")
+parser.add_argument("--rew_acc", type=float, default=0.02, help="horizontal acceleration penalty (with --move)")
 parser.add_argument("--real_hover", action="store_true",
                     help="Real DD24 hover throttle: 0.47 in the 2026-10-25 flight logs (sim default ~0.27). Thrust "
                          "curve ~quadratic (k 0.85-1.0 -> hover 0.43-0.47), ctbr thrust 0.47 +- 0.25.")
@@ -156,8 +157,8 @@ def main():
     env_cfg.ground_start_prob = args.ground_start_prob
     if args.move:
         env_cfg.move_cmd = True
-        env_cfg.move_speed_range = (min(0.15, args.move_speed_max), args.move_speed_max)
-        env_cfg.rew_vtrack = 1.0
+        env_cfg.move_step_range = (min(0.1, args.move_step_max), args.move_step_max)
+        env_cfg.rew_acc = args.rew_acc
     env_cfg.__post_init__()   # recompute observation sizes for the chosen mode
     env_cfg.hover_height = 1.0
 
@@ -228,7 +229,9 @@ def main():
             "real_noise": bool(args.real_noise),
             "ground_start_prob": float(args.ground_start_prob),
             "move_cmd": bool(args.move),
-            "move_speed_range": list(env_cfg.move_speed_range),
+            "move_step_range": list(env_cfg.move_step_range),
+            "move_offset_clip": float(env_cfg.move_offset_clip),
+            "rew_acc": float(env_cfg.rew_acc),
             "ctbr_max_rates": list(env_cfg.ctbr_max_rates),
             "policy_hz": 1.0 / (env_cfg.sim.dt * env_cfg.decimation),
             "lr_schedule": args.lr_schedule,

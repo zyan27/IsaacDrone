@@ -70,7 +70,7 @@ def main():
     cfg.obs_history = ck.get("obs_history", cfg.obs_history)
     if ck.get("move_cmd"):
         cfg.move_cmd = True
-        cfg.move_speed_range = tuple(ck.get("move_speed_range", cfg.move_speed_range))
+        cfg.move_step_range = tuple(ck["move_step_range"])
     if args.net_dropout is not None:
         cfg.tof_net_dropout_range = (args.net_dropout, args.net_dropout)
     cfg.scenario = args.scenario

@@ -30,9 +30,8 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, qos_profile_sensor_data
 from mavros_msgs.msg import AttitudeTarget, OpticalFlowRad, State
 from mavros_msgs.srv import CommandBool, SetMode
-from geometry_msgs.msg import Twist
 from sensor_msgs.msg import Imu, Range
-from std_msgs.msg import Float32MultiArray
+from std_msgs.msg import Float32MultiArray, String
 
 from dd24_policy_core import Core, FlowCfg, Policy, SafetyCfg, TakeoffCfg, roll_pitch_deg
 
@@ -82,16 +81,16 @@ class DD24PolicyNode(Node):
             self.get_logger().info(f"ToF {name:5s} <- {topic}")
         self.create_subscription(OpticalFlowRad, P("flow_topic", f"/{robot}/optical_flow/raw").value, self.on_flow, sd)
         self.create_subscription(State, "/mavros/state", self.on_state, QoSProfile(depth=10))
-        # Move policies: velocity command (forward, left m/s, body frame). A Twist on
-        # ~/cmd_vel (linear.x fwd, linear.y left) wins while fresh; otherwise move_plan,
-        # e.g. "f:3,h:2,b:3,l:3,r:3" (direction:seconds, h = hover), at move_speed, starting
-        # move_delay_s after the policy takes over. Hover policies ignore all of this.
-        self.move_plan = self.parse_plan(P("move_plan", "").value)
-        self.move_speed = float(P("move_speed", 0.3).value)
+        # Move policies: position steps of move_step metres. Send a letter on ~/move
+        # (std_msgs/String: f, b, l, r), or give move_plan, e.g. "f,h,b,l,r" (one step every
+        # move_period_s, h = stay), starting move_delay_s after the policy takes over.
+        # Hover policies ignore all of this.
+        self.move_plan = [x.strip().lower() for x in P("move_plan", "").value.split(",") if x.strip()]
+        self.move_step = float(P("move_step", 0.2).value)
+        self.move_period = float(P("move_period_s", 4.0).value)
         self.move_delay = float(P("move_delay_s", 3.0).value)
-        self.cmd_vel_timeout = float(P("cmd_vel_timeout_s", 0.5).value)
-        self.cmd_vel, self.t_policy = None, None
-        self.create_subscription(Twist, P("cmd_vel_topic", "~/cmd_vel").value, self.on_cmd_vel, QoSProfile(depth=10))
+        self.t_policy, self.plan_i, self.pending = None, 0, []
+        self.create_subscription(String, "~/move", lambda m: self.pending.append(m.data.strip().lower()), QoSProfile(depth=10))
         self.pub = self.create_publisher(AttitudeTarget, P("setpoint_topic", "/mavros/setpoint_raw/attitude").value,
                                          QoSProfile(depth=10))
         self.pub_frame = self.create_publisher(Float32MultiArray, "~/frame", QoSProfile(depth=10))
@@ -124,38 +123,26 @@ class DD24PolicyNode(Node):
             "integrated_y": m.integrated_y, "integrated_xgyro": m.integrated_xgyro,
             "integrated_ygyro": m.integrated_ygyro, "quality": m.quality})
 
-    @staticmethod
-    def parse_plan(text):
-        dirs = {"f": (1, 0), "b": (-1, 0), "l": (0, 1), "r": (0, -1), "h": (0, 0)}
-        plan = []
-        for item in filter(None, (x.strip() for x in text.split(","))):
-            d, sec = item.split(":")
-            plan.append((dirs[d.lower()[0]], float(sec)))
-        return plan
-
-    def on_cmd_vel(self, m):
-        self.cmd_vel = (self.now(), float(m.linear.x), float(m.linear.y))
+    STEPS = {"f": (1, 0), "b": (-1, 0), "l": (0, 1), "r": (0, -1), "h": (0, 0)}
 
     def update_move(self, t, r):
         if not self.core.move_cmd:
             return
         if r.mode != "RUN":
-            self.t_policy = None
-            self.core.set_move(0.0, 0.0)
+            self.t_policy, self.plan_i, self.pending = None, 0, []
             return
         if self.t_policy is None:
             self.t_policy = t
-        if self.cmd_vel and t - self.cmd_vel[0] < self.cmd_vel_timeout:
-            self.core.set_move(self.cmd_vel[1], self.cmd_vel[2])
-            return
         k = t - self.t_policy - self.move_delay
-        v = (0, 0)
-        for d, sec in self.move_plan:
-            if 0 <= k < sec:
-                v = d
-                break
-            k -= sec
-        self.core.set_move(v[0] * self.move_speed, v[1] * self.move_speed)
+        while self.plan_i < len(self.move_plan) and k >= self.plan_i * self.move_period:
+            self.pending.append(self.move_plan[self.plan_i])
+            self.plan_i += 1
+        while self.pending:
+            c = self.pending.pop(0)[:1]
+            if c in self.STEPS:
+                d = self.STEPS[c]
+                self.core.add_step(d[0] * self.move_step, d[1] * self.move_step)
+                self.get_logger().warn(f"move {c}: offset now fwd {self.core.move[0]:+.2f} left {self.core.move[1]:+.2f} m")
 
     def on_state(self, m):
         self.armed, self.mode = bool(m.armed), str(m.mode)
@@ -227,7 +214,7 @@ class DD24PolicyNode(Node):
             roll, pitch = roll_pitch_deg(core.build_frame(self.now())[6:9])
             line += f" | roll {roll:+5.1f} pitch {pitch:+5.1f} deg"
         if core.move_cmd:
-            line += f" | move fwd {core.move[0]:+.2f} left {core.move[1]:+.2f}"
+            line += f" | to go fwd {core.move[0]:+.2f} left {core.move[1]:+.2f} m"
         if r.thrust is not None:
             line += (f" | thrust {r.thrust:.3f} rates roll {r.rates[0]:+.2f} pitch {r.rates[1]:+.2f} "
                      f"yaw {r.rates[2]:+.2f}")

@@ -179,15 +179,23 @@ class Core:
         self.phase = "policy"               # "takeoff" until the hand-over height, then "policy"
         self.to = {}                        # takeoff state
         self.move_cmd = bool(m.get("move_cmd", False))
-        self.move = np.zeros(2)             # body-frame velocity command (forward, left) m/s
-        self.move_max = float(m.get("move_speed_range", [0, 0.5])[1])
+        # Move policies: remaining offset to the hold point (forward, left m, body frame).
+        # A command adds a step; each tick the flow-measured displacement is taken off.
+        self.move = np.zeros(2)
+        self.move_clip = float(m.get("move_offset_clip", 0.5))
+        self.move_odometry = True
+        self.t_move = None
         self.names = FRAME_NAMES + (MOVE_NAMES if self.move_cmd else [])
 
-    def set_move(self, fwd, left):
-        """Velocity command for move policies (ignored by hover policies), clipped to training."""
-        v = np.array([fwd, left], float)
-        n = np.linalg.norm(v)
-        self.move = v * min(1.0, self.move_max / n) if n > 1e-9 else np.zeros(2)
+    def add_step(self, fwd, left):
+        """Move the hold point by (fwd, left) metres (ignored by hover policies)."""
+        self.move = self.move + np.array([fwd, left], float)
+
+    def integrate_move(self, t):
+        if self.t_move is not None and self.move_odometry and self.flow is not None \
+                and t - self.flow[0] <= self.safety.flow_invalid_s and self.flow[3]:
+            self.move = self.move - np.array(self.flow[1:3]) * (t - self.t_move)
+        self.t_move = t
 
     # ---- message inputs
     def on_imu(self, t, accel, gyro, quat_xyzw):
@@ -229,7 +237,7 @@ class Core:
             flow = self.flow[1:]
         parts = [acc, gyro, g, tofs, self.cmd, flow, [self.target_height]]
         if self.move_cmd:
-            parts.append(self.move if self.phase == "policy" else np.zeros(2))
+            parts.append(np.clip(self.move, -self.move_clip, self.move_clip) if self.phase == "policy" else np.zeros(2))
         return np.concatenate(parts).astype(np.float64)
 
     def tick(self, t, active: bool) -> Tick:
@@ -264,6 +272,7 @@ class Core:
             return Tick("WAIT", "not in OFFBOARD + armed", self.cmd.copy(), thr, rates, warnings=warn)
         if not self.active:                 # episode start: history = copies of the first frame, prev cmd = 0
             self.cmd = np.zeros(4)
+            self.move, self.t_move = np.zeros(2), None
             self.hist.clear()
             self.active = True
             tc = self.takeoff
@@ -276,6 +285,8 @@ class Core:
             thr, rates = self.neutral()
             return Tick("NEUTRAL", f"stale: IMU {age_imu * 1e3:.0f} ms, down ToF {age_down * 1e3:.0f} ms",
                         self.cmd.copy(), thr, rates, warnings=warn)
+        if self.move_cmd:
+            self.integrate_move(t)
         frame = self.build_frame(t)
         if not self.hist:
             for _ in range(self.H):
