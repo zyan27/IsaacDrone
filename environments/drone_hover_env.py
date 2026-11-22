@@ -272,6 +272,18 @@ class DroneHoverEnvCfg(DirectRLEnvCfg):
     rew_hvel = 0.0             # extra penalty on horizontal speed (calm drift damping)
     rew_tilt = 0.0             # penalty on tilt^2 (rad^2): stay near level, far from flips
     reward_preset = "v1"       # see REWARD_PRESETS / apply_reward_preset
+    # ---- Move commands (train_rl_hover.py --move) ----------------------------
+    # The policy gets a body-frame horizontal velocity command (forward, left in m/s,
+    # appended to every frame). The hold target moves with it, so the xy term still
+    # anchors position, and the velocity terms penalise the error to the command.
+    # Command 0 = hover. Held move_hold_s, then resampled; reversed at the room edge.
+    move_cmd = False
+    move_speed_range = (0.15, 0.5)
+    move_hold_s = (2.0, 5.0)
+    move_zero_prob = 0.25
+    move_cardinal_prob = 0.6   # straight forward / back / left / right, else any direction
+    move_leash_m = 0.6         # target never runs further than this ahead of the drone
+    rew_vtrack = 0.0           # bonus exp(-|v_xy - v_cmd|^2 / 0.05)
 
 
     def __post_init__(self):
@@ -279,8 +291,9 @@ class DroneHoverEnvCfg(DirectRLEnvCfg):
         if parent is not None:
             parent()
         S = len(self.tof_sensors)
+        M = 2 if self.move_cmd else 0
         if self.obs_mode == "onboard":
-            self.observation_space = (17 + S) * self.obs_history
+            self.observation_space = (17 + S + M) * self.obs_history
         elif self.obs_mode == "privileged":
             self.observation_space = 16 + S
         else:
@@ -288,7 +301,7 @@ class DroneHoverEnvCfg(DirectRLEnvCfg):
         # critic: pos - target(3), velocity(3), quat(4), body rates(3), true ToF(S),
         # net-dropout prob(1), motor thrust scales(4), keep-in box(3), scenario
         # one-hot(len(SCENARIOS)), ghost prob(1), flow dropout prob(1)
-        self.state_space = 18 + S + 3 + len(SCENARIOS) + 2
+        self.state_space = 18 + S + 3 + len(SCENARIOS) + 2 + M   # + move command
 
 
 @configclass
@@ -418,7 +431,10 @@ class DroneHoverEnv(DirectRLEnv):
         self._scene = empty_scenes(N, self.cfg.scene_clutter_max, self.device)
         self._target = self._target_local.repeat(N, 1)      # per-env hover target
         # Observation history for "onboard" mode.
-        self._frame_dim = 17 + S
+        self._frame_dim = 17 + S + (2 if self.cfg.move_cmd else 0)
+        self._mv = torch.zeros(N, 2, device=self.device)        # move command, body (fwd, left) m/s
+        self._mv_t = torch.zeros(N, device=self.device)         # time left on it
+        self._room_xy = torch.ones(N, 2, device=self.device)    # target stays within +-room_xy
         self._hist = torch.zeros(N, self.cfg.obs_history, self._frame_dim, device=self.device)
         self._hist_fill = torch.ones(N, dtype=torch.bool, device=self.device)
         self._half_xy = torch.tensor(
@@ -481,7 +497,46 @@ class DroneHoverEnv(DirectRLEnv):
         target.func(f"{env_prim}/Net/hover_target", target, translation=(0.0, 0.0, self.cfg.hover_height))
 
     # ---------------------------------------------------------------- actions
+    # ------------------------------------------------------------ move command
+    def _move_eff(self):
+        """Command in force: zero while a ground-start drone is still on the floor."""
+        on = (self._airborne | ~self._ground_start).float()[:, None]
+        return self._mv * on
+
+    def _move_vel_w(self):
+        q = self.drone.data.root_quat_w   # w, x, y, z
+        yaw = torch.atan2(2 * (q[:, 0] * q[:, 3] + q[:, 1] * q[:, 2]), 1 - 2 * (q[:, 2] ** 2 + q[:, 3] ** 2))
+        m = self._move_eff()
+        c, s = torch.cos(yaw), torch.sin(yaw)
+        return torch.stack([c * m[:, 0] - s * m[:, 1], s * m[:, 0] + c * m[:, 1]], dim=-1)
+
+    def _sample_move(self, ids):
+        n, c, dev = len(ids), self.cfg, self.device
+        sp = torch.empty(n, device=dev).uniform_(*c.move_speed_range)
+        ang = torch.rand(n, device=dev) * 2 * math.pi
+        card = torch.rand(n, device=dev) < c.move_cardinal_prob
+        ang[card] = torch.randint(0, 4, (int(card.sum()),), device=dev).float() * (math.pi / 2)
+        sp[torch.rand(n, device=dev) < c.move_zero_prob] = 0.0
+        self._mv[ids] = torch.stack([sp * torch.cos(ang), sp * torch.sin(ang)], dim=-1)
+        self._mv_t[ids] = torch.empty(n, device=dev).uniform_(*c.move_hold_s)
+
+    def _step_move(self):
+        self._mv_t -= self.step_dt
+        due = (self._mv_t <= 0).nonzero(as_tuple=False).squeeze(-1)
+        if len(due):
+            self._sample_move(due)
+        t = self._target[:, 0:2] + self._move_vel_w() * self.step_dt
+        out = (t.abs() > self._room_xy).any(-1)
+        t = torch.maximum(torch.minimum(t, self._room_xy), -self._room_xy)
+        self._mv[out] = -self._mv[out]                 # room edge: come back
+        d = t - self._local_pos()[:, 0:2]
+        n = torch.linalg.norm(d, dim=-1, keepdim=True).clamp(min=1e-6)
+        t = self._local_pos()[:, 0:2] + d * torch.clamp(self.cfg.move_leash_m / n, max=1.0)
+        self._target[:, 0:2] = t
+
     def _pre_physics_step(self, actions: torch.Tensor):
+        if self.cfg.move_cmd:
+            self._step_move()
         if self.cfg.control_mode == "ctbr":
             # Policy output in [0,1] (sigmoid) -> a in [-1,1]: the setpoint the MAVROS
             # node would publish. Held for the 4 physics steps until the next policy step.
@@ -664,7 +719,10 @@ class DroneHoverEnv(DirectRLEnv):
             imu = self._imu_s(torch.cat([accel, gyro, grav], dim=-1), dt)
             tof_h = self._tof_s(tof_m / mx, dt)
             flow_h = self._flow_s(flow, dt)
-            frame = torch.cat([imu, tof_h, prev_cmd, flow_h, self._target[:, 2:3]], dim=-1)
+            parts = [imu, tof_h, prev_cmd, flow_h, self._target[:, 2:3]]
+            if self.cfg.move_cmd:
+                parts.append(self._move_eff())
+            frame = torch.cat(parts, dim=-1)
             # For tools/flight_log.py (references only, no copies): what the policy saw.
             self._dbg = {"frame": frame, "tof_meas": tof_m, "tof_true": tof_true, "flow_now": flow}
 
@@ -688,7 +746,7 @@ class DroneHoverEnv(DirectRLEnv):
             torch.nn.functional.one_hot(sc["scen"], len(SCENARIOS)).float(),
             self._tof_ghost_p,
             self._flow_drop_p,
-        ], dim=-1)
+        ] + ([self._move_eff()] if self.cfg.move_cmd else []), dim=-1)
         return {"policy": policy, "critic": critic}
 
     # ----------------------------------------------------------------- reward
@@ -706,12 +764,19 @@ class DroneHoverEnv(DirectRLEnv):
         ) ** 2
 
         tilt = torch.acos(torch.clamp(-data.projected_gravity_b[:, 2], -1.0, 1.0))
+        v_err = data.root_lin_vel_w
+        track = 0.0
+        if self.cfg.move_cmd:   # velocity error to the command (hover: command 0)
+            v_err = v_err.clone()
+            v_err[:, 0:2] -= self._move_vel_w()
+            track = self.cfg.rew_vtrack * torch.exp(-(v_err[:, 0:2] ** 2).sum(-1) / 0.05)
         reward = (
             self.cfg.rew_alive
+            + track
             - self.cfg.rew_z * err[:, 2].abs()
             - self.cfg.rew_xy * torch.linalg.norm(err[:, 0:2], dim=-1)
-            - self.cfg.rew_lin_vel * torch.linalg.norm(data.root_lin_vel_w, dim=-1)
-            - self.cfg.rew_hvel * torch.linalg.norm(data.root_lin_vel_w[:, 0:2], dim=-1)
+            - self.cfg.rew_lin_vel * torch.linalg.norm(v_err, dim=-1)
+            - self.cfg.rew_hvel * torch.linalg.norm(v_err[:, 0:2], dim=-1)
             - self.cfg.rew_tilt * tilt ** 2
             - self.cfg.rew_ang_vel * torch.linalg.norm(data.root_ang_vel_b, dim=-1)
             - self._action_penalty()
@@ -787,6 +852,9 @@ class DroneHoverEnv(DirectRLEnv):
         root_state[ground, 7:13] = 0.0
         self._ground_start[env_ids] = ground
         self._airborne[env_ids] = False
+        self._room_xy[env_ids] = room_xy
+        if c.move_cmd:
+            self._sample_move(env_ids)
 
         self.drone.write_root_pose_to_sim(root_state[:, 0:7], env_ids)
         self.drone.write_root_velocity_to_sim(root_state[:, 7:13], env_ids)

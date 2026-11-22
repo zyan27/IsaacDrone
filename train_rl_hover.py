@@ -66,6 +66,10 @@ parser.add_argument("--real_noise", action="store_true",
                     help="IMU noise = the DD24's in-flight vibration (gyro 0.06/0.10/0.02 rad/s, accel 1.0/1.0/2.7 m/s^2)")
 parser.add_argument("--ground_start_prob", type=float, default=0.0,
                     help="fraction of episodes that start resting on the floor (learn to take off)")
+parser.add_argument("--move", action="store_true",
+                    help="velocity-command task: body-frame (forward, left) m/s command as 2 extra inputs per frame; "
+                         "--init_from may be a hover checkpoint (its input layer is widened with zero weights)")
+parser.add_argument("--move_speed_max", type=float, default=0.5)
 parser.add_argument("--real_hover", action="store_true",
                     help="Real DD24 hover throttle: 0.47 in the 2026-10-25 flight logs (sim default ~0.27). Thrust "
                          "curve ~quadratic (k 0.85-1.0 -> hover 0.43-0.47), ctbr thrust 0.47 +- 0.25.")
@@ -100,6 +104,33 @@ class Critic(nn.Module):
         return self.net(obs).squeeze(-1)
 
 
+def widen_for_move(ck, H, critic_dim, device):
+    """Hover checkpoint (22 inputs/frame) -> move layout (24/frame: + fwd, left command).
+    New input columns get zero weight and norm mean 0 / var 1, so the start policy is
+    exactly the hover policy; the critic's 2 extra inputs (at the end) likewise."""
+    ck = dict(ck)
+    idx = torch.tensor([k * 24 + j for k in range(H) for j in range(22)], device=device)
+
+    def grow_w(w, cols, n):
+        out = torch.zeros(w.shape[0], n, device=device, dtype=w.dtype)
+        out[:, cols] = w.to(device)
+        return out
+
+    def grow_norm(d, cols, n):
+        m, v = torch.zeros(n, device=device), torch.ones(n, device=device)
+        m[cols], v[cols] = d["mean"].to(device), d["var"].to(device)
+        return {"mean": m, "var": v, "count": d["count"]}
+
+    a = dict(ck["actor"]); a["net.0.weight"] = grow_w(a["net.0.weight"], idx, 24 * H)
+    ck["actor"], ck["obs_norm"] = a, grow_norm(ck["obs_norm"], idx, 24 * H)
+    old_c = ck["critic"]["net.0.weight"].shape[1]
+    cidx = torch.arange(old_c, device=device)
+    c = dict(ck["critic"]); c["net.0.weight"] = grow_w(c["net.0.weight"], cidx, critic_dim)
+    ck["critic"], ck["critic_norm"] = c, grow_norm(ck["critic_norm"], cidx, critic_dim)
+    ck["obs_dim"] = 24 * H
+    return ck
+
+
 def main():
     t_start = time.time()
     random.seed(args.seed)
@@ -123,6 +154,10 @@ def main():
         env_cfg.gyro_noise_std = (0.06, 0.10, 0.02)
         env_cfg.accel_noise_std = (1.0, 1.0, 2.7)
     env_cfg.ground_start_prob = args.ground_start_prob
+    if args.move:
+        env_cfg.move_cmd = True
+        env_cfg.move_speed_range = (min(0.15, args.move_speed_max), args.move_speed_max)
+        env_cfg.rew_vtrack = 1.0
     env_cfg.__post_init__()   # recompute observation sizes for the chosen mode
     env_cfg.hover_height = 1.0
 
@@ -142,8 +177,9 @@ def main():
     actor_norm = RunningNorm(obs_dim).to(device)
     # Accelerometer inputs (first 3 of each 22-number frame): their normalisation spread
     # is logged, a healthy value is a few m/s^2 (reset spikes once pushed it to 19-87).
-    acc_idx = ([k * 22 + j for k in range(env_cfg.obs_history) for j in range(3)]
-               if args.obs_mode == "onboard" and obs_dim == 22 * env_cfg.obs_history else [])
+    fd = obs_dim // env_cfg.obs_history
+    acc_idx = ([k * fd + j for k in range(env_cfg.obs_history) for j in range(3)]
+               if args.obs_mode == "onboard" and fd in (22, 24) else [])
     acc_std = lambda: actor_norm.var[acc_idx].sqrt().mean().item()  # noqa: E731
     critic_norm = RunningNorm(critic_dim).to(device)
 
@@ -191,6 +227,8 @@ def main():
             "thrust_curve_k_range": list(env_cfg.thrust_curve_k_range),
             "real_noise": bool(args.real_noise),
             "ground_start_prob": float(args.ground_start_prob),
+            "move_cmd": bool(args.move),
+            "move_speed_range": list(env_cfg.move_speed_range),
             "ctbr_max_rates": list(env_cfg.ctbr_max_rates),
             "policy_hz": 1.0 / (env_cfg.sim.dt * env_cfg.decimation),
             "lr_schedule": args.lr_schedule,
@@ -227,6 +265,10 @@ def main():
         print(f"Resumed from {latest_path} at iter {start_it} (best reward {best_reward:.4f})")
     elif args.init_from:
         ck = torch.load(args.init_from, map_location=device, weights_only=False)
+        H = env_cfg.obs_history
+        if args.move and ck.get("obs_dim") == 22 * H and obs_dim == 24 * H:
+            ck = widen_for_move(ck, H, critic_dim, device)
+            print(f"--init_from: hover checkpoint widened to {obs_dim} inputs (move command weights start at 0)")
         if ck.get("obs_dim", obs_dim) != obs_dim:
             raise SystemExit(f"--init_from {args.init_from}: obs_dim {ck.get('obs_dim')} != env {obs_dim}")
         if ck.get("actor_out", "sigmoid") != "linear":

@@ -68,6 +68,9 @@ def main():
         cfg.gyro_noise_std, cfg.accel_noise_std = (0.06, 0.10, 0.02), (1.0, 1.0, 2.7)
     cfg.ground_start_prob = args.ground_start_prob if args.ground_start_prob is not None else ck.get("ground_start_prob", 0.0)
     cfg.obs_history = ck.get("obs_history", cfg.obs_history)
+    if ck.get("move_cmd"):
+        cfg.move_cmd = True
+        cfg.move_speed_range = tuple(ck.get("move_speed_range", cfg.move_speed_range))
     if args.net_dropout is not None:
         cfg.tof_net_dropout_range = (args.net_dropout, args.net_dropout)
     cfg.scenario = args.scenario

@@ -75,6 +75,8 @@ def feed(core, t, f, tof_max):
            "integrated_x": vy / h * FLOW_DT if h > 0 else 0.0, "integrated_y": vx / h * FLOW_DT if h > 0 else 0.0,
            "quality": 255 if valid > 0.5 else 0, "distance": -1.0}
     core.on_flow(t, msg)
+    if core.move_cmd:
+        core.set_move(float(f[22]), float(f[23]))
 
 
 def main():
@@ -90,6 +92,9 @@ def main():
     cfg.obs_history = ck.get("obs_history", cfg.obs_history)
     if ck.get("real_noise"):
         cfg.gyro_noise_std, cfg.accel_noise_std = (0.06, 0.10, 0.02), (1.0, 1.0, 2.7)
+    if ck.get("move_cmd"):
+        cfg.move_cmd = True
+        cfg.move_speed_range = tuple(ck["move_speed_range"])
     cfg.ground_start_prob = 1.0 if args.takeoff else 0.0
     cfg.__post_init__()
     env = DroneHoverEnv(cfg=cfg, render_mode=None)
@@ -101,7 +106,8 @@ def main():
     norm = load_obs_norm(ck, ck["obs_dim"], dev)
     pol = Policy(args.npz)
     m = pol.meta
-    tof_max, H, F = m["tof_max_range"], m["obs_history"], 22
+    tof_max, H = m["tof_max_range"], m["obs_history"]
+    F = 24 if m.get("move_cmd") else 22
     for key in ("ctbr_thrust_center", "ctbr_thrust_span"):
         assert abs(m[key] - ck[key]) < 1e-9, f"npz {key} {m[key]} != checkpoint {ck[key]}"
 
@@ -173,8 +179,8 @@ def main():
     surv = (ended_at >= T - 1).float()
     zmean = (zerr_sum / zerr_n.clamp(min=1)).cpu()
     core_ok, torch_ok = surv[:K].cpu(), surv[K:].cpu()
-    from deploy.dd24_policy_core import FRAME_NAMES
-    worst = sorted(zip(FRAME_NAMES, in_err.tolist()), key=lambda x: -x[1])[:6]
+    from deploy.dd24_policy_core import FRAME_NAMES, MOVE_NAMES
+    worst = sorted(zip(FRAME_NAMES + (MOVE_NAMES if F == 24 else []), in_err.tolist()), key=lambda x: -x[1])[:6]
     res = {
         "checkpoint": args.checkpoint, "npz": args.npz, "iter": ck.get("iter"),
         "ctbr_thrust_center": m["ctbr_thrust_center"],

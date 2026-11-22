@@ -19,6 +19,7 @@ FRAME_NAMES = (["accel_x", "accel_y", "accel_z", "gyro_x", "gyro_y", "gyro_z", "
                + [f"tof_{n}" for n in ("down", "up", "front", "left", "right")]
                + ["prev_thrust", "prev_roll_rate", "prev_pitch_rate", "prev_yaw_rate",
                   "flow_vx", "flow_vy", "flow_valid", "target_height"])
+MOVE_NAMES = ["move_fwd", "move_left"]   # appended by move-command policies (meta move_cmd)
 
 # Values sensor drivers use for "nothing measured". The Duckietown VL53L1X driver
 # publishes 999 when nothing is in range (seen on the top ToF facing the ceiling).
@@ -177,6 +178,16 @@ class Core:
         self.takeoff = takeoff or TakeoffCfg(enabled=False)
         self.phase = "policy"               # "takeoff" until the hand-over height, then "policy"
         self.to = {}                        # takeoff state
+        self.move_cmd = bool(m.get("move_cmd", False))
+        self.move = np.zeros(2)             # body-frame velocity command (forward, left) m/s
+        self.move_max = float(m.get("move_speed_range", [0, 0.5])[1])
+        self.names = FRAME_NAMES + (MOVE_NAMES if self.move_cmd else [])
+
+    def set_move(self, fwd, left):
+        """Velocity command for move policies (ignored by hover policies), clipped to training."""
+        v = np.array([fwd, left], float)
+        n = np.linalg.norm(v)
+        self.move = v * min(1.0, self.move_max / n) if n > 1e-9 else np.zeros(2)
 
     # ---- message inputs
     def on_imu(self, t, accel, gyro, quat_xyzw):
@@ -216,7 +227,10 @@ class Core:
             flow = (0.0, 0.0, 0.0)
         else:
             flow = self.flow[1:]
-        return np.concatenate([acc, gyro, g, tofs, self.cmd, flow, [self.target_height]]).astype(np.float64)
+        parts = [acc, gyro, g, tofs, self.cmd, flow, [self.target_height]]
+        if self.move_cmd:
+            parts.append(self.move if self.phase == "policy" else np.zeros(2))
+        return np.concatenate(parts).astype(np.float64)
 
     def tick(self, t, active: bool) -> Tick:
         s = self.safety
@@ -309,4 +323,4 @@ class Core:
         H, F = self.H, len(frame)
         sl = slice((H - 1) * F, H * F)
         z = (frame - self.p.mean[sl]) / self.p.std[sl]
-        return [(FRAME_NAMES[i], float(frame[i]), float(z[i])) for i in np.argsort(-np.abs(z)) if abs(z[i]) > z_lim]
+        return [(self.names[i], float(frame[i]), float(z[i])) for i in np.argsort(-np.abs(z)) if abs(z[i]) > z_lim]

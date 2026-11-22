@@ -50,8 +50,12 @@ def main(ckpt, out):
         "norm_clip": 10.0,
         "accel_clip": ck.get("accel_clip"),     # None for policies trained before the IMU fix
     }
-    if meta["obs_dim"] != 22 * meta["obs_history"]:
-        raise SystemExit(f"obs_dim {meta['obs_dim']} != 22 x {meta['obs_history']}: unexpected input layout")
+    if ck.get("move_cmd"):
+        meta["move_cmd"] = True
+        meta["move_speed_range"] = [float(x) for x in ck["move_speed_range"]]
+    F = 24 if meta.get("move_cmd") else 22
+    if meta["obs_dim"] != F * meta["obs_history"]:
+        raise SystemExit(f"obs_dim {meta['obs_dim']} != {F} x {meta['obs_history']}: unexpected input layout")
     arr["meta_json"] = np.array(json.dumps(meta))
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     np.savez(out, **arr)
