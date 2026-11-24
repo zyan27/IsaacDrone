@@ -3,15 +3,19 @@
 #   bash run_on_drone.sh                                   # dry run (default): nothing sent to PX4
 #   bash run_on_drone.sh -p target_height:=0.8             # extra ROS parameters
 #   bash run_on_drone.sh -p dry_run:=false                 # FLY: streams setpoints to PX4
+#   POLICY=policy_matias_675.npz bash run_on_drone.sh -p thrust_gain:=1.74   # another policy file
 # Run from the folder holding dd24_policy_core.py, dd24_policy_node.py and policy.npz.
 set -euo pipefail
 cd "$(dirname "$0")"
 C="${CONTAINER:-ros2-mavros}"
-for f in dd24_policy_core.py dd24_policy_node.py policy.npz; do
+POL="${POLICY:-policy.npz}"
+for f in dd24_policy_core.py dd24_policy_node.py "$POL"; do
     [ -f "$f" ] || { echo "missing $f here"; exit 1; }
 done
 docker exec "$C" mkdir -p /root/dd24
-for f in dd24_policy_core.py dd24_policy_node.py policy.npz; do docker cp "$f" "$C:/root/dd24/$f"; done
+for f in dd24_policy_core.py dd24_policy_node.py; do docker cp "$f" "$C:/root/dd24/$f"; done
+docker cp "$POL" "$C:/root/dd24/policy.npz"
+echo "policy: $POL"
 docker exec "$C" python3 -c "import numpy" 2>/dev/null || { echo "numpy is missing in $C: docker exec $C pip install numpy"; exit 1; }
 echo "Starting dd24_policy in $C (stop with Ctrl-C; if it hangs, Ctrl-\\)"
 docker exec -it "$C" bash -c "source /opt/ros/jazzy/setup.bash && cd /root/dd24 && \
