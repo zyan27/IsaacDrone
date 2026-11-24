@@ -66,6 +66,8 @@ parser.add_argument("--real_noise", action="store_true",
                     help="IMU noise = the DD24's in-flight vibration (gyro 0.06/0.10/0.02 rad/s, accel 1.0/1.0/2.7 m/s^2)")
 parser.add_argument("--ground_start_prob", type=float, default=0.0,
                     help="fraction of episodes that start resting on the floor (learn to take off)")
+parser.add_argument("--entropy_coef", type=float, default=0.01,
+                    help="entropy bonus; 0 when fine-tuning a policy that already flies (the bonus inflates its noise)")
 parser.add_argument("--move", action="store_true",
                     help="position-step task: remaining (forward, left) offset to the hold point as 2 extra inputs per frame; "
                          "--init_from may be a hover checkpoint (its input layer is widened with zero weights)")
@@ -195,7 +197,7 @@ def main():
     gae_lambda = 0.95
     clip_eps = 0.2
     value_coef = 0.5
-    entropy_coef = 0.01
+    entropy_coef = args.entropy_coef
 
     # Hover command comes from the airframe's thrust-to-weight (was hard-coded to
     # the Crazyflie's 1/2.2, which makes a DD24 permanently over-thrust).

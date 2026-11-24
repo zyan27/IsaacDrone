@@ -25,7 +25,11 @@ import sys
 from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--checkpoint", required=True)
+parser.add_argument("--checkpoint", default=None, help="torch checkpoint (not needed with --npz_only)")
+parser.add_argument("--npz_only", action="store_true",
+                    help="no checkpoint (e.g. someone else's exported npz): Core flies ALL drones in the real-drone "
+                         "sim (hover throttle 0.47, measured vibration); its thrust is mapped onto the sim's scale")
+parser.add_argument("--thrust_gain", type=float, default=1.0, help="Core SafetyCfg.thrust_gain (node -p thrust_gain)")
 parser.add_argument("--npz", required=True)
 parser.add_argument("--num_envs", type=int, default=64)
 parser.add_argument("--core_envs", type=int, default=16)
@@ -81,7 +85,16 @@ def feed(core, t, f, tof_max):
 
 
 def main():
-    ck = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
+    pol = Policy(args.npz)
+    if args.npz_only:      # the real drone, as --real_hover --real_noise training models it
+        mm = pol.meta
+        ck = {"obs_mode": "onboard", "control_mode": "ctbr", "ctbr_thrust_center": 0.47, "ctbr_thrust_span": 0.25,
+              "thrust_curve_k_range": (0.85, 1.0), "obs_history": mm["obs_history"], "real_noise": True,
+              "move_cmd": mm.get("move_cmd", False), "move_step_range": mm.get("move_step_range"),
+              "iter": mm.get("train_iter")}
+        args.core_envs = args.num_envs
+    else:
+        ck = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
     cfg = DroneHoverEnvCfgDD24()
     cfg.scene.num_envs = args.num_envs
     cfg.seed = args.seed
@@ -101,15 +114,23 @@ def main():
     env = DroneHoverEnv(cfg=cfg, render_mode=None)
     dev, N, K = env.device, env.num_envs, min(args.core_envs, env.num_envs)
 
-    actor = RLHoverActor(obs_dim=ck["obs_dim"], action_dim=4, out=ck.get("actor_out", "sigmoid")).to(dev)
-    actor.load_state_dict(ck["actor"])
-    actor.eval()
-    norm = load_obs_norm(ck, ck["obs_dim"], dev)
-    pol = Policy(args.npz)
+    if not args.npz_only:
+        actor = RLHoverActor(obs_dim=ck["obs_dim"], action_dim=4, out=ck.get("actor_out", "sigmoid")).to(dev)
+        actor.load_state_dict(ck["actor"])
+        actor.eval()
+        norm = load_obs_norm(ck, ck["obs_dim"], dev)
     m = pol.meta
+    env_ctr, env_span = cfg.ctbr_thrust_center, cfg.ctbr_thrust_span
+
+    def to_action(tk):
+        """Core's real setpoint (thrust, rates) -> the sim's [0,1] action."""
+        a = np.clip(np.r_[(tk.thrust - env_ctr) / env_span, tk.rates / np.array(m["ctbr_max_rates"])], -1, 1)
+        return torch.as_tensor((a + 1) / 2, dtype=torch.float32, device=dev)
     tof_max, H = m["tof_max_range"], m["obs_history"]
     F = 24 if m.get("move_cmd") else 22
     for key in ("ctbr_thrust_center", "ctbr_thrust_span"):
+        if args.npz_only:
+            break
         assert abs(m[key] - ck[key]) < 1e-9, f"npz {key} {m[key]} != checkpoint {ck[key]}"
 
     cores = [None] * K
@@ -120,6 +141,7 @@ def main():
     ended_at = torch.full((N,), T, device=dev)
     zerr_sum = torch.zeros(N, device=dev)
     zerr_n = torch.zeros(N, device=dev)
+    xyerr_sum = torch.zeros(N, device=dev)
     in_err = np.zeros(F)                    # max |core - sim| per frame field (newest frame)
     hist_err = 0.0                          # max over the whole 176 vector
     out_err = 0.0                           # max |core a - torch a| on the same obs
@@ -129,7 +151,7 @@ def main():
     with torch.inference_mode():
         for step in range(T):
             o = obs["policy"]
-            a_torch = actor(norm(o)).clamp(0.0, 1.0)
+            a_torch = actor(norm(o)).clamp(0.0, 1.0) if not args.npz_only else torch.full((N, 4), 0.5, device=dev)
             actions = a_torch.clone()
             on = o.cpu().numpy().astype(np.float64)
             at = a_torch.cpu().numpy()
@@ -138,15 +160,14 @@ def main():
                     continue
                 f = on[i, (H - 1) * F:H * F]
                 if cores[i] is None:
-                    cores[i] = Core(pol, target_height=float(f[21]), safety=SafetyCfg(max_tilt_deg=180.0, max_height_m=99.0),
+                    cores[i] = Core(pol, target_height=float(f[21]),
+                                    safety=SafetyCfg(max_tilt_deg=180.0, max_height_m=99.0, thrust_gain=args.thrust_gain),
                                     takeoff=TakeoffCfg(enabled=args.takeoff))
                 c = cores[i]
                 feed(c, t_node, f, tof_max)
                 tk = c.tick(t_node, active=True)
                 if tk.mode == "TAKEOFF":
-                    span, ctr = m["ctbr_thrust_span"], m["ctbr_thrust_center"]
-                    a = np.clip(np.r_[(tk.thrust - ctr) / span, tk.rates / np.array(m["ctbr_max_rates"])], -1, 1)
-                    actions[i] = torch.as_tensor((a + 1) / 2, dtype=actions.dtype, device=dev)
+                    actions[i] = to_action(tk)
                     takeoff_ticks[i] += 1
                     continue
                 if tk.mode != "RUN":
@@ -155,6 +176,9 @@ def main():
                     continue
                 handed[i] = True
                 core_obs = np.concatenate(list(c.hist))
+                if args.npz_only:     # fly what the real node would send
+                    actions[i] = to_action(tk)
+                    continue
                 if args.takeoff:      # inputs differ by design after a takeoff; fly only
                     actions[i] = torch.as_tensor((tk.cmd + 1.0) / 2.0, dtype=actions.dtype, device=dev)
                     continue
@@ -171,7 +195,9 @@ def main():
             finished |= term | trunc
             still = ~finished
             if step >= T // 2:
-                err = (env._local_pos() - env._target)[:, 2].abs()
+                e3 = env._local_pos() - env._target
+                err = e3[:, 2].abs()
+                xyerr_sum[still] += torch.linalg.norm(e3[:, 0:2], dim=-1)[still]
                 zerr_sum[still] += err[still]
                 zerr_n[still] += 1
             if bool(finished.all()):
@@ -184,23 +210,34 @@ def main():
     worst = sorted(zip(FRAME_NAMES + (MOVE_NAMES if F == 24 else []), in_err.tolist()), key=lambda x: -x[1])[:6]
     res = {
         "checkpoint": args.checkpoint, "npz": args.npz, "iter": ck.get("iter"),
+        "npz_only": bool(args.npz_only), "thrust_gain": args.thrust_gain,
+        "npz_thrust_center": m["ctbr_thrust_center"],
         "ctbr_thrust_center": m["ctbr_thrust_center"],
         "input_max_abs_err": hist_err, "input_worst_fields": worst,
         "output_max_abs_err_npz_vs_torch": out_err, "non_run_ticks": mode_bad,
+        "core_xy_err_mean_m": float((xyerr_sum / zerr_n.clamp(min=1)).cpu()[:K][core_ok > 0].mean()) if core_ok.sum() else None,
         "core_success_rate": core_ok.mean().item(), "torch_success_rate": torch_ok.mean().item(),
         "core_z_err_mean_m": float(zmean[:K][core_ok > 0].mean()) if core_ok.sum() else None,
         "torch_z_err_mean_m": float(zmean[K:][torch_ok > 0].mean()) if torch_ok.sum() else None,
     }
     # Flow is rebuilt from a message (division by height, validity re-decided), so allow float slop.
     res["takeoff"] = bool(args.takeoff)
-    if args.takeoff:
+    # Flow fields can differ by design: the sim decides validity from the TRUE height, the
+    # Pi from its own ToF reading. Parity is judged on everything else.
+    names = FRAME_NAMES + (MOVE_NAMES if F == 24 else [])
+    res["input_max_abs_err_excl_flow"] = max(e for n, e in zip(names, in_err.tolist()) if not n.startswith("flow_"))
+    if args.npz_only:
+        res["takeoff_s_mean"] = (float(np.mean([n for n in takeoff_ticks if n])) / m["policy_hz"]
+                                 if any(takeoff_ticks) else None)
+        res["pass"] = bool(core_ok.mean().item() >= 0.9 and mode_bad == 0)
+    elif args.takeoff:
         res["handed_over"] = sum(handed)
         res["takeoff_s_mean"] = float(np.mean([n for n in takeoff_ticks if n])) / m["policy_hz"] if any(takeoff_ticks) else None
         res["pass"] = bool(core_ok.mean().item() >= 0.9 and sum(handed) == K and mode_bad == 0)
     else:
-        res["pass"] = bool(hist_err < 1e-4 and out_err < 1e-4 and mode_bad == 0)
+        res["pass"] = bool(res["input_max_abs_err_excl_flow"] < 1e-4 and out_err < 1e-4 and mode_bad == 0)
     print(json.dumps(res, indent=2))
-    out = args.out or os.path.join(os.path.dirname(args.checkpoint), "validate.json")
+    out = args.out or os.path.join(os.path.dirname(args.checkpoint or args.npz), "validate.json")
     with open(out, "w") as fh:
         json.dump(res, fh, indent=2)
     env.close()
